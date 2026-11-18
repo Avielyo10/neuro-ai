@@ -1,0 +1,7 @@
+data/
+cache/
+__pycache__/
+*.pyc
+filelist.tsv
+dl.txt
+report/report.html

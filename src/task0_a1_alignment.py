@@ -1,0 +1,175 @@
+"""Task 0 - Stimulus-brain alignment in primary auditory cortex (A1).
+
+1. A1 BOLD time course per subject (mean of z-scored voxels in A1_L + A1_R) and group average.
+2. Audio amplitude envelope: |Hilbert|, 8-Hz low-pass, averaged within 1.5-s TR bins.
+3. Normalised cross-correlation (xcorr 'coeff') envelope vs. BOLD at lags -10..+10 TRs.
+4. Significance: phase-randomised and circularly shifted surrogate envelopes (max-statistic).
+5. Same analysis after convolving the envelope with a canonical (SPM double-gamma) HRF.
+
+Run:  python src/task0_a1_alignment.py
+"""
+import json
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.io import wavfile
+from scipy.signal import butter, correlate, hilbert, sosfiltfilt
+from scipy.stats import gamma
+
+from common import AUDIO, FIGS, N_TR, RESULTS, TR, load_roi_data, zscore
+
+MAX_LAG = 10          # TRs
+N_SURR = 2000         # surrogates per null type
+STORY_ONSET_S = 15.0  # 13 s of music + 2 s of silence precede the story in the .wav
+rng = np.random.default_rng(0)
+
+
+def audio_envelope_tr():
+    """Envelope of the whole .wav in consecutive 1.5-s bins (291 bins for 438 s)."""
+    fs, y = wavfile.read(AUDIO)
+    y = y.astype(float).mean(axis=1)                       # stereo -> mono
+    env = np.abs(hilbert(y, N=1 << int(np.ceil(np.log2(len(y))))))[: len(y)]
+    env = sosfiltfilt(butter(4, 8, fs=fs, output="sos"), env)  # 8-Hz low-pass
+    n = int(round(fs * TR))
+    nb = len(env) // n
+    return env[: nb * n].reshape(nb, n).mean(axis=1), fs, y
+
+
+def spm_hrf(tr, duration=32.0):
+    """Canonical double-gamma HRF (SPM defaults) sampled every `tr` seconds."""
+    t = np.arange(0, duration, tr)
+    h = gamma.pdf(t, 6) - gamma.pdf(t, 16) / 6.0
+    return h / h.sum()
+
+
+def xcorr(env, bold, max_lag=MAX_LAG):
+    """MATLAB-style xcorr(...,'coeff') of z-scored signals.
+
+    r[lag] = (1/N) sum_t env[t] * bold[t + lag]; a POSITIVE lag means BOLD follows the sound.
+    `env` may be (n_surrogates, N); `bold` is (N,). Returns lags and r (..., 2*max_lag+1).
+    """
+    env = np.atleast_2d(zscore(env, axis=-1))
+    bold = zscore(bold)
+    n = len(bold)
+    lags = np.arange(-max_lag, max_lag + 1)
+    r = np.stack([(env[:, : n - L] * bold[L:]).sum(1) if L >= 0 else (env[:, -L:] * bold[: n + L]).sum(1)
+                  for L in lags], axis=1) / n
+    return lags, r.squeeze()
+
+
+def phase_randomise(x, n):
+    """Surrogates with the same power spectrum as x but random Fourier phases."""
+    f = np.fft.rfft(x - x.mean())
+    ph = rng.uniform(0, 2 * np.pi, (n, len(f)))
+    ph[:, 0] = 0
+    if len(x) % 2 == 0:
+        ph[:, -1] = 0
+    return np.fft.irfft(np.abs(f) * np.exp(1j * ph), n=len(x), axis=1)
+
+
+def circ_shift(x, n):
+    """Circularly shifted copies of x (shifts of at least 2*MAX_LAG TRs from zero)."""
+    shifts = rng.integers(2 * MAX_LAG, len(x) - 2 * MAX_LAG, n)
+    return np.stack([np.roll(x, s) for s in shifts])
+
+
+def peak(lags, r):
+    k = int(np.argmax(r))
+    return int(lags[k]), float(r[k])
+
+
+def main():
+    roi = load_roi_data()
+    ia = [k for k, l in enumerate(roi["labels"]) if l.split()[1] in ("A1_L", "A1_R")]
+    a1 = np.concatenate([roi["X"][k] for k in ia], axis=2)          # (18, 280, V_A1)
+    subj = zscore(zscore(a1, axis=1).mean(axis=2), axis=1)          # (18, 280)
+    group = zscore(subj.mean(axis=0))
+    print(f"A1 ROIs: {[roi['labels'][k] for k in ia]}, {a1.shape[2]} voxels")
+
+    env_full, fs, y = audio_envelope_tr()
+    onset = int(round(STORY_ONSET_S / TR))                           # 10 TRs
+    env = zscore(env_full[onset: onset + N_TR])
+    env_hrf = zscore(np.convolve(env_full, spm_hrf(TR))[: len(env_full)][onset: onset + N_TR])
+
+    res = {"n_voxels_A1": int(a1.shape[2]), "story_onset_TR": onset, "audio_s": len(y) / fs}
+    curves = {}
+    for name, e in (("raw", env), ("hrf", env_hrf)):
+        lags, rg = xcorr(e, group)
+        rs = np.stack([xcorr(e, s)[1] for s in subj])
+        pk_g = peak(lags, rg)
+        pk_s = [peak(lags, r) for r in rs]
+        out = {"group_peak_lag_TR": pk_g[0], "group_peak_lag_s": pk_g[0] * TR, "group_peak_r": pk_g[1],
+               "group_r_at_lag0": float(rg[MAX_LAG]),
+               "subj_peak_lag_TR": [p[0] for p in pk_s], "subj_peak_r": [p[1] for p in pk_s]}
+        # null distributions of the peak (max over lags) correlation
+        for null, make in (("phase", phase_randomise), ("circ", circ_shift)):
+            surr = make(e, N_SURR)
+            null_g = xcorr(surr, group)[1].max(axis=1)
+            out[f"group_p_{null}"] = float((1 + (null_g >= pk_g[1]).sum()) / (1 + N_SURR))
+            out[f"null95_{null}"] = float(np.quantile(null_g, 0.95))
+            null_s = np.stack([xcorr(surr, s)[1].max(axis=1) for s in subj])   # (18, N_SURR)
+            p_s = (1 + (null_s >= np.array([p[1] for p in pk_s])[:, None]).sum(1)) / (1 + N_SURR)
+            out[f"subj_p_{null}"] = p_s.tolist()
+            if name == "raw" and null == "phase":
+                null_plot = null_g
+        res[name] = out
+        curves[name] = (lags, rg, rs)
+        print(f"[{name}] group peak lag {pk_g[0]} TR ({pk_g[0]*TR:.1f} s), r={pk_g[1]:.3f}, "
+              f"p_phase={out['group_p_phase']:.4f}, p_circ={out['group_p_circ']:.4f}; "
+              f"subjects: lag {np.mean(out['subj_peak_lag_TR']):.2f}+-{np.std(out['subj_peak_lag_TR']):.2f} TR, "
+              f"r {np.mean(out['subj_peak_r']):.3f}, n sig (p<.05, phase) "
+              f"{int((np.array(out['subj_p_phase']) < .05).sum())}/18")
+
+    # Where does the scan start inside the .wav?  Slide the 280-TR window over the HRF-convolved
+    # envelope of the whole file and correlate at zero lag (independent check of the 15-s onset).
+    conv_full = np.convolve(env_full, spm_hrf(TR))[: len(env_full)]
+    offs = np.arange(0, len(env_full) - N_TR + 1)
+    r_off = [float(np.corrcoef(conv_full[o: o + N_TR], group)[0, 1]) for o in offs]
+    res["window_offset_scan"] = {"offset_TR": offs.tolist(), "r": r_off, "best_offset_TR": int(offs[np.argmax(r_off)])}
+    print("best scan-start offset in wav (HRF model, zero lag):", res["window_offset_scan"]["best_offset_TR"], "TR")
+    json.dump(res, open(RESULTS / "task0_alignment.json", "w"), indent=1)
+
+    # ---------------- figures ----------------
+    t = np.arange(N_TR) * TR
+    fig, ax = plt.subplots(2, 1, figsize=(11, 5.2), sharex=True)
+    L = res["raw"]["group_peak_lag_TR"]
+    ax[0].plot(t, env, color="0.45", lw=1, label="audio envelope (TR-binned, z)")
+    ax[0].plot(t, group, color="C3", lw=1.3, label="group A1 BOLD (z)")
+    ax[0].set_title("A1 BOLD and audio envelope, as recorded")
+    ax[1].plot(t, env_hrf, color="0.45", lw=1, label="envelope * canonical HRF (z)")
+    ax[1].plot(t, group, color="C3", lw=1.3, label="group A1 BOLD (z)")
+    ax[1].set_title(f"After convolving the envelope with the canonical HRF "
+                    f"(r = {res['hrf']['group_r_at_lag0']:.2f} at lag 0)")
+    ax[1].set_xlabel("Time from story onset (s)")
+    for a in ax:
+        a.legend(loc="upper right", ncol=2, fontsize=8, frameon=False)
+        a.set_ylabel("z"); a.set_xlim(0, N_TR * TR)
+    fig.tight_layout(); fig.savefig(FIGS / "task0_timecourses.png", dpi=200); plt.close(fig)
+
+    fig, ax = plt.subplots(1, 3, figsize=(13, 3.9))
+    for a, name, ttl in ((ax[0], "raw", "Raw envelope vs. A1"), (ax[1], "hrf", "HRF-convolved envelope vs. A1")):
+        lags, rg, rs = curves[name]
+        a.plot(lags, rs.T, color="0.75", lw=0.7)
+        a.plot([], [], color="0.75", lw=0.7, label="single subjects (n = 18)")
+        a.plot(lags, rg, color="C3", lw=2.2, marker="o", ms=3.5, label="group-average A1")
+        a.axhline(res[name]["null95_phase"], color="k", ls="--", lw=0.8, label="95th pct. of null peak (group)")
+        a.axvline(0, color="k", lw=0.5)
+        pk = res[name]["group_peak_lag_TR"]
+        a.annotate(f"peak: lag {pk:+d} TR ({pk*TR:+.1f} s)\nr = {res[name]['group_peak_r']:.2f}",
+                   (pk, res[name]["group_peak_r"]), (0.03, 0.80), textcoords="axes fraction", fontsize=9,
+                   arrowprops=dict(arrowstyle="->", lw=0.7))
+        a.set_xlabel("Lag (TRs; positive = BOLD follows sound)"); a.set_ylabel("Cross-correlation (r)")
+        a.set_title(ttl); a.set_xticks(lags[::2]); a.legend(fontsize=7, loc="upper right", frameon=False)
+        sec = a.secondary_xaxis("top", functions=(lambda x: x * TR, lambda x: x / TR)); sec.set_xlabel("Lag (s)", fontsize=8)
+    ax[2].hist(null_plot, bins=40, color="0.7")
+    ax[2].axvline(res["raw"]["group_peak_r"], color="C3", lw=2)
+    ax[2].set_title(f"Null of peak r, {N_SURR} phase-randomised envelopes\n"
+                    f"observed r = {res['raw']['group_peak_r']:.2f}, p = {res['raw']['group_p_phase']:.4f}", fontsize=10)
+    ax[2].set_xlabel("Peak cross-correlation over lags -10..+10"); ax[2].set_ylabel("Surrogates")
+    fig.tight_layout(); fig.savefig(FIGS / "task0_xcorr.png", dpi=200); plt.close(fig)
+
+
+if __name__ == "__main__":
+    main()
