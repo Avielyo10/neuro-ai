@@ -6,6 +6,7 @@ flattened to a 20*V feature vector.  Each subject therefore contributes one samp
 import warnings
 
 import numpy as np
+from sklearn.covariance import LedoitWolf
 from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
 from sklearn.naive_bayes import GaussianNB
@@ -48,9 +49,12 @@ def make_classifiers() -> dict:
                 (17 subjects x 14 segments = 238; 17 per class), so the sample covariance is singular.
                 Both are therefore fitted after a PCA rotation estimated on the training fold only
                 (all components kept, i.e. lossless for the training data) and are regularised:
-                LDA uses one pooled covariance with Ledoit-Wolf shrinkage; QDA uses one covariance
-                per class, shrunk half-way to a scaled identity (shrinkage = 0.5; with 17 samples
-                per class the automatic estimate is rank-deficient).
+                LDA (class ShrinkageLDA) uses one pooled within-class covariance shrunk towards a
+                scaled identity with the Ledoit-Wolf amount, WITHOUT rescaling the features
+                (scikit-learn's shrinkage="auto" standardises features first, which after a PCA
+                rotation whitens the components and removes the regularisation); QDA uses one
+                covariance per class, shrunk half-way to a scaled identity (shrinkage = 0.5; with
+                17 samples per class the automatic estimate is rank-deficient).
     """
     return {
         "KNN (K=1)": KNeighborsClassifier(1, algorithm="brute"),
@@ -58,9 +62,37 @@ def make_classifiers() -> dict:
         "KNN (K=3)": KNeighborsClassifier(3, algorithm="brute"),
         "Linear SVM": GramLinearSVC(C=1.0),
         "Naive Bayes": GaussianNB(),
-        "LDA": make_pipeline(PCA(svd_solver="full"), LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")),
+        "LDA": ShrinkageLDA(),
         "QDA": make_pipeline(PCA(svd_solver="full"), QuadraticDiscriminantAnalysis(solver="eigen", shrinkage=0.5)),
     }
+
+
+class ShrinkageLDA:
+    """LDA with a pooled within-class covariance shrunk towards a scaled identity (Ledoit-Wolf).
+
+    Computed in float64 in the span of the training data (lossless PCA rotation): class means lie
+    in that span and the shrinkage target is isotropic, so components of a test sample outside
+    the span add the same constant to every class score and cannot change the prediction.
+    """
+
+    def fit(self, X, y):
+        X = np.asarray(X, dtype=np.float64)
+        self.pca = PCA(svd_solver="full").fit(X)
+        Z = self.pca.transform(X)
+        self.classes_ = np.unique(y)
+        self.means_ = np.stack([Z[y == c].mean(0) for c in self.classes_])
+        resid = Z - self.means_[np.searchsorted(self.classes_, y)]
+        cov = LedoitWolf(assume_centered=True).fit(resid).covariance_
+        self.coef_ = np.linalg.solve(cov, self.means_.T).T                 # (classes, dims)
+        self.intercept_ = -0.5 * np.einsum("cd,cd->c", self.means_, self.coef_)  # equal priors
+        return self
+
+    def predict(self, X):
+        Z = self.pca.transform(np.asarray(X, dtype=np.float64))
+        return self.classes_[np.argmax(Z @ self.coef_.T + self.intercept_, axis=1)]
+
+    def score(self, X, y):
+        return float(np.mean(self.predict(X) == y))
 
 
 def fit_score_all(Xtr, ytr, Xte, yte) -> np.ndarray:

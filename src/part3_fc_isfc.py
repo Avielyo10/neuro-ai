@@ -19,12 +19,14 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 from nilearn import plotting
+from PIL import Image
 
 from common import (CACHE, FIGS, GRID, N_TR, RESULTS, SIGNAL_THRESHOLD, TEMPLATE, load_subject, load_voi,
                     roi_labels, subject_files, voi_to_flat_index, zscore)
 
 MIN_OTHERS = 9      # ISFC needs a voxel to be valid in at least this many of the other 17 subjects
 N_TOP = 3
+EXTRA_SEEDS = ["08 PREC_L"]   # supplementary non-auditory seed (best default-mode ROI in Task A)
 
 
 def top_rois():
@@ -91,9 +93,10 @@ def main():
     ref = nib.load(str(TEMPLATE))
     Z, valid, union = load_whole_brain()
     print("whole-brain voxels (valid in >=1 subject):", len(union), "| valid in all 18:", int(valid.all(0).sum()))
-    summary = {"top_rois": [labels[k] for k in top], "mean_acc_pct": [float(score[k] * 100) for k in top], "seeds": {}}
+    seeds_all = top + [labels.index(e) for e in EXTRA_SEEDS]
+    summary = {"extra_seeds": EXTRA_SEEDS, "top_rois": [labels[k] for k in top], "mean_acc_pct": [float(score[k] * 100) for k in top], "rank4": [labels[int(np.argsort(-score)[3])], float(np.sort(score)[-4] * 100)], "seeds": {}}
     imgs = {}
-    for k in top:
+    for k in seeds_all:
         flat = voi_to_flat_index(vois[k][1])
         seed_cols = np.searchsorted(union, flat[np.isin(flat, union)])
         fc_s, isfc_s = seed_maps(Z, valid, seed_cols)
@@ -120,7 +123,7 @@ def main():
     json.dump(summary, open(RESULTS / "part3_summary.json", "w"), indent=1)
 
     # ---- multi-planar figure per seed: FC (top) vs ISFC (bottom), same colour scale ----
-    for k in top:
+    for k in seeds_all:
         com = summary["seeds"][labels[k]]["seed_center_mm"]
         fig, axes = plt.subplots(4, 1, figsize=(12, 10.5), gridspec_kw={"height_ratios": [1.5, 1, 1.5, 1]})
         for r, name in enumerate(("FC", "ISFC")):
@@ -133,8 +136,12 @@ def main():
             plotting.plot_stat_map(imgs[(k, name)], bg_img=ref, threshold=0.15, vmax=0.6, cmap="cold_hot",
                                    display_mode="z", cut_coords=[-24, -9, 6, 21, 36, 51, 63], axes=axes[2 * r + 1],
                                    figure=fig, black_bg=True, colorbar=False)
-        fig.savefig(FIGS / f"part3_maps_{labels[k].replace(' ', '_')}.png", dpi=170, facecolor="k")
+        path = FIGS / f"part3_maps_{labels[k].replace(' ', '_')}.png"
+        fig.savefig(path, dpi=170, facecolor="k")
         plt.close(fig)
+        im = Image.open(path).convert("RGB")                       # trim the empty black margins
+        box = im.point(lambda v: 255 if v > 12 else 0).getbbox()
+        im.crop((max(box[0] - 20, 0), max(box[1] - 20, 0), min(box[2] + 20, im.width), min(box[3] + 20, im.height))).save(path)
 
 
 if __name__ == "__main__":

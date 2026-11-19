@@ -28,7 +28,6 @@ def part2a():
         ax.bar(range(52), m[order, j], yerr=s[order, j], color=COL[j], ecolor="0.25", capsize=1.5,
                error_kw=dict(lw=0.7))
         ax.axhline(CH14, color="k", ls="--", lw=0.9)
-        ax.text(51.6, CH14 + 1.5, "chance 7.14 %", ha="right", fontsize=7.5)
         ax.set_ylabel("Accuracy (%)"); ax.set_ylim(0, 92); ax.set_xlim(-0.7, 51.7)
         ax.set_title(f"{clf[j]}   (mean over ROIs {m[:, j].mean():.1f} %, best {labels[int(m[:, j].argmax())]} "
                      f"{m[:, j].max():.1f} %)", fontsize=10, loc="left")
@@ -36,7 +35,7 @@ def part2a():
     axes[-1].set_xticks(range(52))
     axes[-1].set_xticklabels([f"{labels[k]} ({nvox[k]})" for k in order], rotation=90, fontsize=7.5)
     axes[-1].set_xlabel("ROI (index name, number of voxels) - sorted by mean accuracy over classifiers")
-    fig.suptitle("Task A - LOSO 14-way story-segment decoding in anatomical space (mean +- SEM over 18 folds)",
+    fig.suptitle("Task A - LOSO 14-way story-segment decoding in anatomical space (mean +- SEM over 18 folds; dashed line = chance, 7.14 %)",
                  y=0.995, fontsize=12)
     fig.tight_layout(); fig.savefig(FIGS / "part2a_bars_all_rois.png", dpi=170); plt.close(fig)
 
@@ -123,7 +122,8 @@ def part2b():
     ax[0].set_xticks(list(range(len(klist) + 1)) + [len(klist) + 0.6]); ax[0].set_xticklabels([str(k) for k in klist] + ["all V", "anat."])
     ax[0].axhline(CH7, color="k", ls="--", lw=0.8)
     ax[0].set_xlabel("Common-space dimensions k (top PCs of the training template)"); ax[0].set_ylabel("Accuracy (%)")
-    ax[0].set_title(f"Mean over the {int(big.sum())} ROIs with V > {max(klist)}", fontsize=10); ax[0].legend(fontsize=7.5, frameon=False, ncol=2)
+    ax[0].set_title(f"Mean over the {int(big.sum())} ROIs with V > {max(klist)} (dashed: chance 14.29 %)", fontsize=10)
+    ax[0].set_ylim(10, 72); ax[0].legend(fontsize=7.5, frameon=False, ncol=4, loc="lower center", bbox_to_anchor=(0.5, 0.06))
     top = np.argsort(-h.mean(1))[:6]
     for k in top:
         ax[1].plot(range(len(klist) + 1), list(np.nanmean(R[k], axis=(1, 2))) + [h[k].mean()], marker="o", label=labels[k])
@@ -135,7 +135,18 @@ def part2b():
     def wil(x):
         try: return float(wilcoxon(x).pvalue)
         except ValueError: return 1.0
+    # each split direction separately, and per-ROI paired tests over the 18 held-out subjects (FDR)
+    Ah, Hh = z["anat"] * 100, z["hyper"] * 100                       # (52, 2, 18, 7)
+    pr = np.array([ttest_1samp(gm[k], 0).pvalue for k in range(52)])
+    srt = np.sort(pr); ok = srt <= 0.05 * np.arange(1, 53) / 52
+    thr = srt[np.nonzero(ok)[0].max()] if ok.any() else 0
+    subj_gain = gm.mean(0)
     out = {"clf": clf, "k_list": [int(k) for k in klist],
+           "by_half": {"anat": Ah.mean((0, 2)).tolist(), "hyper": Hh.mean((0, 2)).tolist()},
+           "n_sig_gain_fdr": int(((pr <= thr) & (gm.mean(1) > 0)).sum()), "n_sig_loss_fdr": int(((pr <= thr) & (gm.mean(1) < 0)).sum()),
+           "sig_gain_rois": [labels[k] for k in order if pr[k] <= thr and gm[k].mean() > 0],
+           "sig_loss_rois": [labels[k] for k in order if pr[k] <= thr and gm[k].mean() < 0],
+           "subj_gain_mean": float(subj_gain.mean()), "subj_gain_p": float(ttest_1samp(subj_gain, 0).pvalue),
            "anat_mean": a.mean(0).tolist(), "hyper_mean": h.mean(0).tolist(),
            "gain_mean": (h - a).mean(0).tolist(), "n_improved": (h > a).sum(0).tolist(),
            "p_wilcoxon_rois": [wil(h[:, j] - a[:, j]) for j in range(len(clf))],
