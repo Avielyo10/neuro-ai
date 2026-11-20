@@ -9,13 +9,23 @@ This is a Python re-implementation of the course helpers run_isfc_p2m.m / isfc_p
 are computed here instead of being read from the `avg` folder.  Subject-level r maps are averaged
 after Fisher z-transformation and transformed back to r.
 
+Common mask: a subject's FC is defined wherever that subject has valid signal, but leave-one-out ISFC
+needs enough other subjects.  So that FC and ISFC are drawn and summarised on the SAME voxels, both
+group maps are restricted to voxels that are valid in at least MIN_OTHERS + 1 = 10 of the 18 subjects.
+
+Memory: the whole-brain array is 18 x 280 x ~76,000 float32 (1.5 GB on disk, cache/wholebrain.npz);
+building it from the .mat files needs about 8 GB of RAM.
+
 Run:  python src/part3_fc_isfc.py     (after part2a_decoding.py)
 """
 import json
+import re
+import warnings
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.text as mtext
 import nibabel as nib
 import numpy as np
 from nilearn import plotting
@@ -26,7 +36,15 @@ from common import (CACHE, FIGS, GRID, N_TR, RESULTS, SIGNAL_THRESHOLD, TEMPLATE
 
 MIN_OTHERS = 9      # ISFC needs a voxel to be valid in at least this many of the other 17 subjects
 N_TOP = 3
+DISPLAY_THR = 0.15  # maps are displayed for |r| > 0.15
 EXTRA_SEEDS = ["08 PREC_L"]   # supplementary non-auditory seed (best default-mode ROI in Task A)
+# Approximate anatomical probe locations (template mm).  FC / ISFC are averaged over the 3 x 3 x 3
+# voxel cube (9 mm) centred on each coordinate; used only to put numbers on the verbal description
+# of the maps (which regions belong to the FC pattern of which seed).
+PROBES = {"insula L": (-39, 3, 0), "insula R": (39, 3, 0), "SMA / medial frontal": (0, -3, 57),
+          "anterior cingulate": (0, 21, 33), "sensorimotor L": (-39, -24, 57), "thalamus L": (-12, -18, 6),
+          "thalamus R": (12, -18, 6), "cerebellum L": (-21, -60, -27), "cerebellum R": (21, -60, -27),
+          "IFG L": (-48, 21, 12), "precuneus": (0, -57, 33), "medial prefrontal": (0, 54, 6)}
 
 
 def top_rois():
@@ -78,7 +96,34 @@ def seed_maps(Z, valid, seed_cols):
 
 
 def fisher_mean(r):
-    return np.tanh(np.nanmean(np.arctanh(np.clip(r, -0.999999, 0.999999)), axis=0))
+    """Mean over subjects after Fisher z-transformation (NaN where no subject has a value)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)      # all-NaN columns -> NaN, masked later
+        return np.tanh(np.nanmean(np.arctanh(np.clip(r, -0.999999, 0.999999)), axis=0))
+
+
+def typographic_minus(fig):
+    """Replace the ASCII hyphen in negative numbers (nilearn's cut labels and colour-bar ticks) by a
+    real minus sign."""
+    fig.canvas.draw()
+    for ax in fig.axes:                                       # colour bars: freeze the tick labels
+        labels = [t.get_text() for t in ax.get_yticklabels()]
+        if any(re.search(r"-\d", l) for l in labels):
+            ax.set_yticks(ax.get_yticks())
+            ax.set_yticklabels([re.sub(r"-(?=\d)", "\u2212", l) for l in labels])
+    for t in fig.findobj(mtext.Text):
+        if re.search(r"-\d", t.get_text()):
+            t.set_text(re.sub(r"-(?=\d)", "\u2212", t.get_text()))
+
+
+def probe_cols(xyz, union, ref):
+    """Columns (into `union`) of the 3 x 3 x 3 voxel cube centred on template coordinate xyz (mm)."""
+    c = np.round(nib.affines.apply_affine(np.linalg.inv(ref.affine), xyz)).astype(int)
+    off = np.array(np.meshgrid(*[[-1, 0, 1]] * 3, indexing="ij")).reshape(3, -1).T
+    ijk = c + off
+    ijk = ijk[np.all((ijk >= 0) & (ijk < np.array(GRID)), axis=1)]
+    flat = np.ravel_multi_index(ijk.T, GRID, order="F")
+    return np.searchsorted(union, flat[np.isin(flat, union)])
 
 
 def to_img(values, union, ref):
@@ -92,21 +137,33 @@ def main():
     labels, vois = roi_labels(), load_voi()
     ref = nib.load(str(TEMPLATE))
     Z, valid, union = load_whole_brain()
-    print("whole-brain voxels (valid in >=1 subject):", len(union), "| valid in all 18:", int(valid.all(0).sum()))
+    keep = valid.sum(0) >= MIN_OTHERS + 1          # common FC / ISFC mask: valid in >= 10 subjects
+    print("whole-brain voxels (valid in >=1 subject):", len(union), "| valid in all 18:", int(valid.all(0).sum()),
+          f"| common map mask (valid in >= {MIN_OTHERS + 1}):", int(keep.sum()))
     seeds_all = top + [labels.index(e) for e in EXTRA_SEEDS]
-    summary = {"extra_seeds": EXTRA_SEEDS, "top_rois": [labels[k] for k in top], "mean_acc_pct": [float(score[k] * 100) for k in top], "rank4": [labels[int(np.argsort(-score)[3])], float(np.sort(score)[-4] * 100)], "seeds": {}}
+    rank = [int(k) for k in np.argsort(-score)]
+    summary = {"min_valid_subjects": MIN_OTHERS + 1, "n_voxels_map_mask": int(keep.sum()),
+               "n_voxels_valid_any_subject": int(len(union)), "n_voxels_valid_all_subjects": int(valid.all(0).sum()),
+               "threshold_display": DISPLAY_THR,
+               "extra_seed_rank": {e: rank.index(labels.index(e)) + 1 for e in EXTRA_SEEDS},
+               "extra_seeds": EXTRA_SEEDS, "top_rois": [labels[k] for k in top], "mean_acc_pct": [float(score[k] * 100) for k in top], "rank4": [labels[int(np.argsort(-score)[3])], float(np.sort(score)[-4] * 100)], "seeds": {}}
     imgs = {}
     for k in seeds_all:
         flat = voi_to_flat_index(vois[k][1])
         seed_cols = np.searchsorted(union, flat[np.isin(flat, union)])
         fc_s, isfc_s = seed_maps(Z, valid, seed_cols)
         fc, isfc = fisher_mean(fc_s), fisher_mean(isfc_s)
+        fc[~keep] = np.nan; isfc[~keep] = np.nan    # same voxels in both maps
+        assert np.array_equal(np.isfinite(fc), keep) and np.array_equal(np.isfinite(isfc), keep)
+        with np.errstate(invalid="ignore"):         # plain mean of r, as in the course helper
+            d_plain = max(float(np.nanmax(np.abs(np.nanmean(m[:, keep], 0) - g[keep])))
+                          for m, g in ((fc_s, fc), (isfc_s, isfc)))
         tag = labels[k].replace(" ", "_")
         for name, m in (("FC", fc), ("ISFC", isfc)):
             imgs[(k, name)] = to_img(m, union, ref)
             nib.save(imgs[(k, name)], str(RESULTS / f"map_{name}_{tag}.nii.gz"))
         outside = np.ones(len(union), bool); outside[seed_cols] = False
-        both = np.isfinite(fc) & np.isfinite(isfc) & outside
+        both = keep & outside
         com = nib.affines.apply_affine(ref.affine, np.array(np.unravel_index(flat, GRID, order="F")).T.mean(0))
         summary["seeds"][labels[k]] = {
             "n_seed_voxels": int(len(seed_cols)), "seed_center_mm": [float(c) for c in com],
@@ -118,8 +175,16 @@ def main():
             "spatial_corr_fc_isfc": float(np.corrcoef(fc[both], isfc[both])[0, 1]),
             "isfc_within_seed_mean_r": float(np.nanmean(isfc[seed_cols])),
             "fc_within_seed_mean_r": float(np.nanmean(fc[seed_cols])),
+            "n_seed_voxels_in_mask": int(keep[seed_cols].sum()),
+            "n_fc_gt_thr": int((fc[keep] > DISPLAY_THR).sum()), "n_isfc_gt_thr": int((isfc[keep] > DISPLAY_THR).sum()),
+            "n_fc_lt_neg_thr": int((fc[keep] < -DISPLAY_THR).sum()), "n_isfc_lt_neg_thr": int((isfc[keep] < -DISPLAY_THR).sum()),
+            "max_abs_diff_fisher_vs_plain_mean": d_plain,
+            "probes": {name: {"mm": list(xyz), "n_vox": int(keep[c].sum()),
+                              "fc": float(np.nanmean(fc[c])), "isfc": float(np.nanmean(isfc[c]))}
+                       for name, xyz in PROBES.items() for c in [probe_cols(xyz, union, ref)]},
         }
-        print(labels[k], json.dumps(summary["seeds"][labels[k]]))
+        print(labels[k], json.dumps({a: b for a, b in summary["seeds"][labels[k]].items() if a != "probes"}))
+        print("   probes FC/ISFC:", "; ".join(f"{n} {v['fc']:.2f}/{v['isfc']:.2f}" for n, v in summary["seeds"][labels[k]]["probes"].items()))
     json.dump(summary, open(RESULTS / "part3_summary.json", "w"), indent=1)
 
     # ---- multi-planar figure per seed: FC (top) vs ISFC (bottom), same colour scale ----
@@ -127,16 +192,17 @@ def main():
         com = summary["seeds"][labels[k]]["seed_center_mm"]
         fig, axes = plt.subplots(4, 1, figsize=(12, 10.5), gridspec_kw={"height_ratios": [1.5, 1, 1.5, 1]})
         for r, name in enumerate(("FC", "ISFC")):
-            long = ("FC - within-subject functional connectivity" if name == "FC"
-                    else "ISFC - inter-subject functional correlation")
-            plotting.plot_stat_map(imgs[(k, name)], bg_img=ref, threshold=0.15, vmax=0.6, cmap="cold_hot",
-                                   display_mode="ortho", cut_coords=[round(c) for c in com], axes=axes[2 * r],
-                                   figure=fig, title=f"{long}   (seed: {labels[k]})", draw_cross=True,
-                                   black_bg=True, annotate=True)
-            plotting.plot_stat_map(imgs[(k, name)], bg_img=ref, threshold=0.15, vmax=0.6, cmap="cold_hot",
+            long = ("FC \u2013 within-subject functional connectivity" if name == "FC"
+                    else "ISFC \u2013 inter-subject functional correlation")
+            disp = plotting.plot_stat_map(imgs[(k, name)], bg_img=ref, threshold=DISPLAY_THR, vmax=0.6, cmap="cold_hot",
+                                          display_mode="ortho", cut_coords=[round(c) for c in com], axes=axes[2 * r],
+                                          figure=fig, draw_cross=True, black_bg=True, annotate=True)
+            disp.title(f"{long}   (seed: {labels[k]})", size=20)     # small enough not to cover the L/R labels
+            plotting.plot_stat_map(imgs[(k, name)], bg_img=ref, threshold=DISPLAY_THR, vmax=0.6, cmap="cold_hot",
                                    display_mode="z", cut_coords=[-24, -9, 6, 21, 36, 51, 63], axes=axes[2 * r + 1],
                                    figure=fig, black_bg=True, colorbar=False)
         path = FIGS / f"part3_maps_{labels[k].replace(' ', '_')}.png"
+        typographic_minus(fig)
         fig.savefig(path, dpi=170, facecolor="k")
         plt.close(fig)
         im = Image.open(path).convert("RGB")                       # trim the empty black margins

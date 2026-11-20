@@ -41,20 +41,31 @@ class GramLinearSVC:
 def make_classifiers() -> dict:
     """All hyper-parameters are fixed a priori (never tuned on test data).
 
-    KNN         Euclidean distance, K = 1, 2, 3 (ties in the K = 2 vote go to the lower label,
-                scikit-learn's default).
+    KNN         Euclidean distance, K = 1, 2, 3, uniform votes.  A tied vote (frequent for K = 2,
+                where the two neighbours often belong to different classes) goes to the lower class
+                index, scikit-learn's default.
     Linear SVM  libsvm SVC, linear kernel, C = 1, one-vs-one multi-class.
     Naive Bayes Gaussian, every (voxel, time point) feature independent.
     LDA / QDA   The feature count (20*V, up to ~15,000) far exceeds the number of training samples
                 (17 subjects x 14 segments = 238; 17 per class), so the sample covariance is singular.
                 Both are therefore fitted after a PCA rotation estimated on the training fold only
-                (all components kept, i.e. lossless for the training data) and are regularised:
+                (all components kept; the rotated data have at most n_train - 1 = 237 non-trivial
+                dimensions) and are regularised IN THAT SUBSPACE:
                 LDA (class ShrinkageLDA) uses one pooled within-class covariance shrunk towards a
-                scaled identity with the Ledoit-Wolf amount, WITHOUT rescaling the features
-                (scikit-learn's shrinkage="auto" standardises features first, which after a PCA
-                rotation whitens the components and removes the regularisation); QDA uses one
-                covariance per class, shrunk half-way to a scaled identity (shrinkage = 0.5; with
-                17 samples per class the automatic estimate is rank-deficient).
+                scaled identity.  The Ledoit-Wolf intensity and the target scale (trace / q, q = number
+                of PCA dimensions) are estimated from the PCA scores, i.e. they are those of the
+                training subspace and NOT those of the 20*V-dimensional voxel space.  The PCA rotation
+                is lossless for the training data, but the regulariser is not rotation-equivalent: the
+                same Ledoit-Wolf formula applied in voxel space gives a much weaker shrinkage for wide
+                ROIs, and a different accuracy (see supp_lda_sensitivity.py, which compares this
+                model with exact voxel-space Ledoit-Wolf and with the equivalent of scikit-learn's
+                LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto") on the raw features).
+                Features are not rescaled before shrinkage (scikit-learn's shrinkage="auto"
+                standardises features first, which after a PCA rotation whitens the components and
+                removes the regularisation).
+                QDA uses one covariance per class, shrunk half-way to a scaled identity
+                (shrinkage = 0.5, again in the PCA subspace; with 17 samples per class the automatic
+                estimate is rank-deficient).  Needs scikit-learn >= 1.8 (QDA `solver` / `shrinkage`).
     """
     return {
         "KNN (K=1)": KNeighborsClassifier(1, algorithm="brute"),
@@ -68,11 +79,22 @@ def make_classifiers() -> dict:
 
 
 class ShrinkageLDA:
-    """LDA with a pooled within-class covariance shrunk towards a scaled identity (Ledoit-Wolf).
+    """LDA with a pooled within-class covariance shrunk towards a scaled identity (Ledoit-Wolf),
+    estimated in the subspace spanned by the training samples.
 
-    Computed in float64 in the span of the training data (lossless PCA rotation): class means lie
-    in that span and the shrinkage target is isotropic, so components of a test sample outside
-    the span add the same constant to every class score and cannot change the prediction.
+    Model: the training fold is rotated with a full PCA (q <= n_train components, float64); the
+    pooled within-class covariance S of the PCA scores is replaced by (1 - a) S + a (tr S / q) I,
+    with the Ledoit-Wolf intensity a computed from the q-dimensional scores.  Both a and the target
+    scale tr S / q therefore refer to the training subspace, not to the p = 20*V voxel space
+    (voxel-space Ledoit-Wolf would use tr S / p and a different, for wide ROIs much smaller, a).
+    In voxel-space terms the model is a considerably stronger regulariser when p >> q; it is a
+    sensible but specific choice, and the accuracy of LDA relative to the other classifiers depends
+    on it (supp_lda_sensitivity.py).
+
+    Within the model as defined, nothing is lost by working in the subspace: class means lie in the
+    training span and the shrinkage target is isotropic, so components of a test sample outside the
+    span add the same constant to every class score and cannot change the prediction.
+    Equal class priors (the design is balanced).
     """
 
     def fit(self, X, y):
@@ -82,7 +104,9 @@ class ShrinkageLDA:
         self.classes_ = np.unique(y)
         self.means_ = np.stack([Z[y == c].mean(0) for c in self.classes_])
         resid = Z - self.means_[np.searchsorted(self.classes_, y)]
-        cov = LedoitWolf(assume_centered=True).fit(resid).covariance_
+        lw = LedoitWolf(assume_centered=True).fit(resid)
+        cov = lw.covariance_
+        self.shrinkage_ = float(lw.shrinkage_)      # Ledoit-Wolf intensity in the PCA subspace (diagnostic only)
         self.coef_ = np.linalg.solve(cov, self.means_.T).T                 # (classes, dims)
         self.intercept_ = -0.5 * np.einsum("cd,cd->c", self.means_, self.coef_)  # equal priors
         return self

@@ -1,8 +1,11 @@
+# Tested with Python 3.13, numpy 2.5, scipy 1.18, scikit-learn 1.9, matplotlib 3.11, nibabel 5.5, nilearn 0.14.
 numpy
 scipy
-scikit-learn
+# >= 1.8 is required: QuadraticDiscriminantAnalysis(solver="eigen", shrinkage=...) does not exist in 1.7 and earlier
+scikit-learn>=1.8
 matplotlib
 nibabel
 nilearn
 joblib
+pillow
 gdown
