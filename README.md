@@ -62,7 +62,7 @@ printout of it. `notebook/build_submission.py` builds this package from the same
 pip install nbformat nbclient nbconvert ipykernel psutil pandas
 mkdir -p submission
 echo '{"name": "Full Name", "id": "123456789"}' > submission/student.json   # never committed
-python3 notebook/build_submission.py               # full build, about 13 minutes on 4 cores
+python3 notebook/build_submission.py               # full build, about 15 minutes on 4 cores
 python3 notebook/build_submission.py --stamp-only  # after editing student.json: seconds, no re-run
 ```
 
@@ -81,7 +81,7 @@ Outputs: `submission/HW1_<id>.ipynb` (executed, with outputs), `submission/HW1_<
 - **Running the notebook elsewhere (Colab).** The first cells install missing packages (scikit-learn >= 1.8)
   and locate the data: environment variable `HW1_DATA_DIR`, a local folder, the course folder on Google Drive
   (`MyDrive/Data_for_fMRI_course`, sub-folder `story_selected_reg_wm_csf_hsd_last_half2`), or a download
-  with `gdown`. Peak memory is about 3 GB; the text cells are static and describe the run embedded in the file.
+  with `gdown`. Peak memory is about 4.5 GB; the text cells are static and describe the run embedded in the file.
 
 The 18 subjects are those in `story_selected_reg_wm_csf_hsd_last_half2` (the folder used by the course
 helper scripts and containing the example subject `KM_060412`). The `avg` sub-folder is not used.

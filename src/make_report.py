@@ -168,7 +168,7 @@ clf_rows = "".join(
 # LDA regulariser sensitivity (supp_lda_sensitivity.py)
 LDA_ROIS = ["48 A1_R", "08 PREC_L", "12 pSTS_R", "15 aMTG_R"]       # large auditory / largest DMN / mid-size / small
 ld_tab = {r["roi"]: r for r in LD["table"]}
-ld_names = {"span_lw": "Report model: LW in the PCA span of the training fold",
+ld_names = {"span_lw": "Main model: LW in the PCA span of the training fold",
             "voxel_lw": "Exact pooled LW in the 20&middot;V voxel space",
             "sklearn_auto": "scikit-learn LDA, <code>lsqr</code> + <code>shrinkage=\"auto\"</code>, raw features"}
 lda_rows = "".join(
@@ -178,7 +178,7 @@ lda_rows = "".join(
     for v in ("span_lw", "sklearn_auto", "voxel_lw"))
 lda_hdr = "".join(f"<th style='white-space:nowrap'>{short(r)}<br>(V = {ld_tab[r]['n_vox']})</th>" for r in LDA_ROIS)
 dsk, dvx = LD["diff_vs_span_lw_pp"]["sklearn_auto"], LD["diff_vs_span_lw_pp"]["voxel_lw"]
-check(abs(LD["mean_over_rois"]["sklearn_auto"] - LD["mean_over_rois"]["span_lw"]) < 1.0, "sklearn-auto LDA no longer close to the report model")
+check(abs(LD["mean_over_rois"]["sklearn_auto"] - LD["mean_over_rois"]["span_lw"]) < 1.0, "sklearn-auto LDA no longer close to the main model")
 check(LD["mean_over_rois"]["voxel_lw"] < LD["mean_over_rois"]["span_lw"] - 3 and LD["n_rois_lda_best"]["voxel_lw"] < 10,
       "voxel-space LW LDA no longer clearly worse")
 check(LD["clf_mean"]["voxel_lw"][jL] < A["clf_mean"][jQ], "voxel-space LW LDA is no longer below QDA on average")
@@ -298,8 +298,11 @@ p3_rows = "".join(
 appA = "".join(
     f"<tr><td>{r['roi']}</td><td>{r['n_vox']}</td>" + "".join(f"<td>{a:.1f} ± {s:.1f}</td>" for a, s in zip(r["acc"], r["sem"])) + "</tr>"
     for r in A["table"])
-appB = "".join(
-    f"<tr><td>{r['roi']}</td><td>{r['n_vox']}</td>" + "".join(f"<td>{a:.0f} → {h:.0f}</td>" for a, h in zip(r["anat"], r["hyper"]))
+appB_anat = "".join(
+    f"<tr><td>{r['roi']}</td><td>{r['n_vox']}</td>" + "".join(f"<td>{a:.1f} ± {s:.1f}</td>" for a, s in zip(r["anat"], r["anat_sem"])) + "</tr>"
+    for r in B["table"])
+appB_hyper = "".join(
+    f"<tr><td>{r['roi']}</td><td>{r['n_vox']}</td>" + "".join(f"<td>{a:.1f} ± {s:.1f}</td>" for a, s in zip(r["hyper"], r["hyper_sem"]))
     + f"<td>{n(r['gain'], '+.1f')}</td></tr>" for r in B["table"])
 author_line = ('<div class="meta author">' + (f"<b>Submitted by:</b> {AUTHORS}" if AUTHORS.strip() else "&nbsp;") + "</div>")
 
@@ -410,7 +413,7 @@ With {n_train} training samples and thousands of features, strongly regularised 
 whereas exact LW shrinkage in voxel space, a much weaker regulariser, gives {LD['mean_over_rois']['voxel_lw']:.1f} %; LDA is then below QDA on average and the best model in only {LD['n_rois_lda_best']['voxel_lw']} ROIs (SVM {LD['n_rois_best_by_clf']['voxel_lw'][jS]}, Naive Bayes {LD['n_rois_best_by_clf']['voxel_lw'][jN]}).
 The three leading ROIs are the same under all three variants. The data therefore support "SVM, strongly shrunk LDA and Naive Bayes perform similarly", not a general advantage of LDA.
 KNN is clearly worst ({span(knn_means, '.0f')} %): raw Euclidean distances in a very high-dimensional space are dominated by subject-specific noise, and with one exemplar per subject and class the neighbourhood is sparse. K = 2 is slightly worse than K = 1 and 3, probably because a two-neighbour vote is tied whenever the two neighbours belong to different classes, and the tie then goes to the lower class index.
-QDA, which estimates 14 covariance matrices from 17 samples each, depends heavily on its fixed shrinkage and is on average below the report's LDA.</p>"""
+QDA, which estimates 14 covariance matrices from 17 samples each, depends heavily on its fixed shrinkage and is on average below the LDA used here.</p>"""
 
 BLK["lda"] = f"""<div class="tbl"><table><tr><th rowspan="2">LDA covariance regulariser</th><th rowspan="2">Mean over 52 ROIs</th><th colspan="{len(LDA_ROIS)}">Example ROIs</th><th rowspan="2"># ROIs: LDA best</th><th rowspan="2"># ROIs: SVM / NB best</th></tr>
 <tr>{lda_hdr}</tr>{lda_rows}</table>
@@ -539,8 +542,11 @@ BLK["refs"] = f"""<h2>References</h2>
 BLK["appA"] = f"""<h2 class="pb">Appendix A &ndash; Task A, all ROIs (14-class accuracy %, mean &plusmn; SEM over 18 folds)</h2>
 <table class="small"><tr><th>ROI</th><th>V</th>{hdr}</tr>{appA}</table>"""
 
-BLK["appB"] = f"""<h2 class="pb">Appendix B &ndash; Task B, all ROIs (7-class accuracy %, anatomical &rarr; hyperaligned)</h2>
-<table class="small"><tr><th>ROI</th><th>V</th>{hdr}<th>Mean gain (pp)</th></tr>{appB}</table>"""
+BLK["appB"] = f"""<h2 class="pb">Appendix B &ndash; Task B, all ROIs (7-class accuracy %, mean &plusmn; SEM over 18 folds)</h2>
+<p><b>B.1 Anatomical alignment</b> (split-half 7-class baseline; a fold's accuracy is the mean of the two half assignments).</p>
+<table class="small"><tr><th>ROI</th><th>V</th>{hdr}</tr>{appB_anat}</table>
+<p class="pb"><b>B.2 After hyperalignment.</b> Last column: gain over B.1 in percentage points, mean of the 7 classifiers.</p>
+<table class="small"><tr><th>ROI</th><th>V</th>{hdr}<th>Mean gain (pp)</th></tr>{appB_hyper}</table>"""
 
 # Order of the blocks in the document.  Text paragraphs can break across pages, tables and figures cannot,
 # so the order within each section was chosen to fill the pages (floats follow the text that cites them).

@@ -1,7 +1,7 @@
 {
  "design": "Task A design: 14 classes, 20*V features, LOSO over 18 subjects, 52 ROIs; accuracy in %",
  "variants": {
-  "span_lw": "report model: Ledoit-Wolf in the 238-dim PCA span of the training fold",
+  "span_lw": "main model: Ledoit-Wolf in the 238-dim PCA span of the training fold",
   "voxel_lw": "exact pooled Ledoit-Wolf in the 20*V voxel space",
   "sklearn_auto": "equivalent of sklearn LDA(solver='lsqr', shrinkage='auto') on raw features"
  },

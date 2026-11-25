@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the submission: one executed Colab notebook, its PDF printout and a zip of both.
 
-    python3 notebook/build_submission.py               # full build (about 13 minutes on 4 cores)
+    python3 notebook/build_submission.py               # full build (about 15 minutes on 4 cores)
     python3 notebook/build_submission.py --stamp-only  # new name / ID, no re-run (seconds)
 
 Steps of a full build
@@ -422,9 +422,14 @@ def notebook_html(nb, student: dict, scales: dict | None = None) -> str:
     body = re.sub(r'<div class="cell border-box-sizing text_cell rendered"(?=( id="[^"]*")?><div class="prompt input_prompt">\s*</div>'
                   r'<div class="inner_cell">\s*<div class="text_cell_render border-box-sizing rendered_html">\s*<h2 id="Appendix)',
                   '<div class="cell border-box-sizing text_cell rendered new-page"', body)
+    # ... and so does the second table of Appendix B (its one-line introduction would otherwise be
+    # stranded at the bottom of the page that the first table fills)
+    body = re.sub(r'<div class="cell border-box-sizing text_cell rendered"(?=( id="[^"]*")?><div class="prompt input_prompt">\s*</div>'
+                  r'<div class="inner_cell">\s*<div class="text_cell_render border-box-sizing rendered_html">\s*<p><strong>B\.2 )',
+                  '<div class="cell border-box-sizing text_cell rendered new-page"', body)
     md = [c.source for c in nb.cells if c.cell_type == "markdown"]
     assert body.count("rendered caption") == sum(m.startswith(("**Figure ", "**Table ")) for m in md) > 0
-    assert body.count("rendered new-page") == sum(m.startswith("## Appendix") for m in md) > 0
+    assert body.count("rendered new-page") == sum(m.startswith(("## Appendix", "**B.2 ")) for m in md) > 0
     # short tables are kept on one page
     def keep(m):
         size = "short" if m.group(0).count("<tr") <= KEEP_TABLE_ROWS else "long"

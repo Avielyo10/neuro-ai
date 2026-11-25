@@ -26,19 +26,22 @@
 # | 2 | Task 0: audio envelope vs. A1 BOLD | under 0.5 min |
 # | 3 | Task A: decoding in the original voxel space, two supplementary analyses | about 2 min |
 # | 4 | Task B: hyperalignment | about 7 min |
-# | 5 | Part 3: FC and ISFC maps | about 1 min |
+# | 5 | Part 3: FC and ISFC maps | about 2 min |
 # | 6 | Limitations, references, appendix tables, run summary | – |
 #
-# **How to run.** Run all cells from top to bottom (about 11 minutes on 4 CPU cores; expect
+# **How to run.** Run all cells from top to bottom (about 12 minutes on 4 CPU cores; expect
 # roughly twice that on the Google Colab free tier, which has 2 cores). Peak memory is about
-# 3.5 GB, worker processes included. The only cell that may need editing is the configuration cell in Section 0.3, which
-# locates the course data (a local folder, the course folder on Google Drive, or an automatic
-# download of about 1.2 GB).
+# 4.5 GB, worker processes included. The only cell that may need editing is the
+# configuration cell in Section 0.3, which locates the course data (a local folder, the
+# course folder on Google Drive, or an automatic download of about 1.2 GB). If the first
+# code cell asks for a restart of the runtime, restart and run all cells again.
 #
 # **Text and numbers.** The numbers quoted in the text cells are those of the run whose outputs
 # are embedded below (library versions are printed in Section 0.2). All random numbers come
 # from a fixed seed. A re-run with other library versions can change individual values
-# slightly; the text is not updated automatically.
+# slightly; the text is not updated automatically. Every analysis also saves a summary
+# dictionary as a JSON file in the work directory. These files hold more values than the
+# text quotes and serve as a record of the run.
 
 # %% [markdown]
 # ## 0. Setup and data
@@ -47,19 +50,27 @@
 #
 # The next cell installs what a fresh Colab runtime lacks, before any of these packages is
 # imported. scikit-learn 1.8 or newer is required because the QDA model uses
-# `QuadraticDiscriminantAnalysis(solver="eigen", shrinkage=0.5)`. If everything is already
-# installed, the cell does nothing.
+# `QuadraticDiscriminantAnalysis(solver="eigen", shrinkage=0.5)`. Packages that the runtime may
+# already have imported (numpy, pandas, matplotlib, ...) are kept at their installed versions.
+# If pip nevertheless had to replace a package that is already loaded, the cell stops and
+# asks for a restart of the runtime. If everything is already installed, it does nothing.
 
 # %%
 import importlib.metadata as _metadata
+import os
 import re
 import subprocess
 import sys
+import tempfile
 
 # (pip name, minimum (major, minor) version or None)
 REQUIREMENTS = [("scikit-learn", (1, 8)), ("numpy", None), ("scipy", None), ("pandas", None),
                 ("matplotlib", None), ("joblib", None), ("pillow", None), ("nibabel", None),
                 ("nilearn", None), ("gdown", None)]
+# Installed packages that pip must not replace: the running kernel (or Colab itself) may
+# already have imported them, and a new version on disk under an old one in memory breaks.
+FROZEN = ["numpy", "scipy", "pandas", "matplotlib", "joblib", "pillow", "nibabel",
+          "requests", "packaging", "jinja2", "threadpoolctl", "lxml"]
 
 
 def unmet_requirements():
@@ -75,15 +86,40 @@ def unmet_requirements():
     return unmet
 
 
+def installed_versions():
+    """{normalised distribution name: version} of everything that is installed."""
+    return {re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower(): d.version
+            for d in _metadata.distributions() if d.metadata["Name"]}
+
+
+def pip_install(requirements, constraints=None):
+    cmd = [sys.executable, "-m", "pip", "install", "--quiet", *requirements]
+    if constraints:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+            fh.write("\n".join(constraints))
+        cmd += ["-c", fh.name]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
 _todo = unmet_requirements()
 if _todo:
     print("Installing:", ", ".join(_todo))
-    _pip = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", *_todo],
-                          capture_output=True, text=True)
+    _before = installed_versions()
+    _pip = pip_install(_todo, [f"{n}=={_before[n]}" for n in FROZEN if n in _before])
+    if _pip.returncode != 0:                 # no solution with the frozen versions
+        _pip = pip_install(_todo)
     if _pip.returncode != 0 or unmet_requirements():
         raise RuntimeError("pip install failed:\n" + _pip.stdout + _pip.stderr)
-    if "sklearn" in sys.modules:
-        print("scikit-learn was already imported: restart the runtime and run all cells again.")
+    _after = installed_versions()
+    _changed = {n for n in _before if _after.get(n) != _before[n]}
+    _stale = sorted(mod for mod, dists in _metadata.packages_distributions().items()
+                    if mod in sys.modules
+                    and _changed & {re.sub(r"[-_.]+", "-", d).lower() for d in dists})
+    if _stale:
+        raise RuntimeError(
+            "pip replaced packages that this runtime had already imported ("
+            + ", ".join(_stale) + "). Restart the runtime (Colab: Runtime > Restart session) "
+            "and run all cells again; this cell will then find everything installed.")
     print("Done.")
 else:
     print("All required packages are already installed.")
@@ -135,6 +171,8 @@ GRID = (61, 73, 61)       # voxel grid of the 3-mm MNI template
 SIGNAL_THRESHOLD = 6000   # mean-signal threshold of the course helper scripts
 CH14, CH7 = 100 / 14, 100 / 7     # chance levels (%) of the 14-class and 7-class problems
 MINUS = "\u2212"          # typographic minus sign for tables
+
+plt.rcParams["font.family"] = "DejaVu Sans"    # ships with matplotlib: same figures everywhere
 
 T_START = time.time()
 TIMINGS = {}              # run time of the heavy cells, in seconds
@@ -202,15 +240,28 @@ def download_course_data(target):
     """Download the files used here from the course Drive folder (Drive layout is kept)."""
     import gdown
     target = Path(target)
-    listing = gdown.download_folder(id=GDRIVE_FOLDER_ID, output=str(target), quiet=True,
-                                    skip_download=True)
+    hint = (f"put the data into {DRIVE_DIR} on Google Drive, or set DATA_DIR in the "
+            "configuration above to a folder that holds the files")
+    try:
+        listing = gdown.download_folder(id=GDRIVE_FOLDER_ID, output=str(target), quiet=True,
+                                        skip_download=True)
+    except Exception as exc:
+        raise FileNotFoundError(f"could not list the course Drive folder ({exc}); {hint}")
+    if not listing:
+        raise FileNotFoundError(f"could not list the course Drive folder; {hint}")
     for item in listing:
         rel = Path(item.path)
         top_level = len(rel.parts) == 1 and rel.name in TOP_LEVEL_FILES
         subject = rel.parent == Path(SUBJECT_SUBDIR) and rel.suffix == ".mat"
         if (top_level or subject) and not (target / rel).exists():
             (target / rel).parent.mkdir(parents=True, exist_ok=True)
-            gdown.download(id=item.id, output=str(target / rel), quiet=True)
+            try:
+                done = gdown.download(id=item.id, output=str(target / rel), quiet=True)
+            except Exception as exc:
+                done = None
+                print(f"download of {rel} failed: {exc}")
+            if not done:
+                raise FileNotFoundError(f"could not download {rel}; {hint}")
 
 
 def locate_data():
@@ -375,7 +426,7 @@ def show_figure(fig, name, dpi, width):
     plt.close(fig)
     display(Image(filename=str(path), width=width))
 
-
+# %%
 _t = time.time()
 ROI_X = load_roi_data()
 N_VOX = np.array([x.shape[2] for x in ROI_X])
@@ -468,7 +519,7 @@ class ShrinkageLDA:
     def score(self, X, y):
         return float(np.mean(self.predict(X) == y))
 
-
+# %%
 def make_classifiers():
     """The seven models, in CLF_NAMES order.  All hyper-parameters are fixed a priori.
 
@@ -531,7 +582,7 @@ def print_by_classifier(rows):
     for label, values in rows.items():
         print(f"{label:13s}" + "".join(f"{v:12.1f}" for v in values))
 
-
+# %%
 # shape check on the largest ROI: 14 segments x 20 TRs x V voxels x 18 subjects
 _k = int(N_VOX.argmax())
 print(f"group tensor of ROI {LABELS[_k]}:",
@@ -685,6 +736,7 @@ for name, e in (("raw", env), ("hrf", env_hrf)):
           f"peak r {np.mean(out['subj_peak_r']):.3f}, significant (p < .05, phase): "
           f"{int((np.array(out['subj_p_phase']) < .05).sum())}/{N_SUB}")
 
+# %%
 # --- where does the scan start inside the .wav?  Slide the 280-TR window over the
 #     HRF-convolved envelope of the whole file and correlate at zero lag.  (Not an independent
 #     check of the crop: it assumes the canonical HRF delay.)
@@ -715,6 +767,16 @@ t0["voxel_zscore_first"] = {
 print(f"voxel-wise z-score before averaging instead: raw peak lag {peak(lags_v, r_v)[0]} TR, "
       f"r = {peak(lags_v, r_v)[1]:.3f}; correlation of the subject time courses with the "
       f"primary ones >= {t0['voxel_zscore_first']['min_subj_corr_with_primary']:.3f}")
+
+# --- numbers quoted in the discussion below
+_rg = dict(zip(t0["raw"]["lags_TR"], t0["raw"]["group_r_by_lag"]))
+print("raw envelope, group r at lags 0..5 TRs: "
+      + ", ".join(f"{lag}: {_rg[lag]:+.2f}" for lag in range(6)))
+for _lab, _h in t0["hemispheres"].items():
+    print(f"{_lab} alone: peak lag {_h['peak_lag_TR']} TR, r = {_h['peak_r']:.2f}")
+_b = t0["window_offset_scan"]["best_offset_TR"]
+print("zero-lag r of the HRF model at scan-start offsets "
+      + ", ".join(f"{o} TR: {r_off[o]:.2f}" for o in (_b - 1, _b, _b + 1)))
 
 save_json(t0, "task0_alignment.json")
 TIMINGS["2 Task 0"] = time.time() - _t
@@ -965,6 +1027,11 @@ show_table(pd.DataFrame({
 print("exact ties for the best classifier:")
 for _tie in A["rois_best_tied"]:
     print(f"   {_tie['roi']}: {' = '.join(_tie['tied'])}")
+print(f"of the {A['n_big_rois']} ROIs with V >= 200, best classifier: "
+      + ", ".join(f"{c} {v}" for c, v in zip(CLF_NAMES, A["n_big_rois_best"]) if v))
+print("median V of the ROIs in which a classifier is best: "
+      + ", ".join(f"{c} {v:.0f}" for c, v, k in
+                  zip(CLF_NAMES, A["best_median_nvox"], A["n_rois_best"]) if k))
 
 # %% [prose] h3clf.cap
 
@@ -992,7 +1059,7 @@ show_table(pd.DataFrame(
 # Same samples and LOSO folds as above. Three LDA variants that differ only in how the pooled
 # within-class covariance is regularised:
 #
-# - `span_lw`: the model used in this report (`ShrinkageLDA`), Ledoit–Wolf (LW) shrinkage
+# - `span_lw`: the main model (`ShrinkageLDA`), Ledoit–Wolf (LW) shrinkage
 #   estimated in the PCA subspace of the training fold;
 # - `voxel_lw`: exact pooled LW shrinkage estimated in the full 20·V voxel space;
 # - `sklearn_auto`: the estimator of scikit-learn's
@@ -1134,7 +1201,7 @@ def selfcheck_lda(max_p=700):
     assert d_a < 1e-9 and same_vox and same_skl, res
     return res
 
-
+# %%
 _t = time.time()
 _check = selfcheck_lda()
 print(f"self-check passed on ROI {_check['roi']} ({_check['n_features']} features, "
@@ -1150,6 +1217,7 @@ _out = Parallel(n_jobs=N_JOBS)(delayed(run_roi_lda)(ROI_X[k]) for k in order)
 for k, o in zip(order, _out):
     _res[k] = o
 
+# %%
 jL = CLF_NAMES.index("LDA")
 acc_v = {v: np.stack([r[v] for r in _res]) * 100 for v in VARIANTS}       # (52, 18)
 _same = np.abs(acc_v["span_lw"] - ACC_A[:, :, jL] * 100).max()
@@ -1158,7 +1226,7 @@ assert _same < 1e-9, f"span_lw does not reproduce the Task-A LDA accuracies ({_s
 LD = {"design": "Task A design: 14 classes, 20*V features, LOSO over 18 subjects, 52 ROIs; "
                 "accuracy in %",
       "variants": {
-          "span_lw": "report model: Ledoit-Wolf in the 238-dim PCA span of the training fold",
+          "span_lw": "main model: Ledoit-Wolf in the 238-dim PCA span of the training fold",
           "voxel_lw": "exact pooled Ledoit-Wolf in the 20*V voxel space",
           "sklearn_auto": "equivalent of sklearn LDA(solver='lsqr', shrinkage='auto') "
                           "on raw features"},
@@ -1203,13 +1271,13 @@ for v in VARIANTS:
           f"{LD['n_rois_lda_best'][v]:2d} ROIs, top-3 {LD['top3_rois'][v]}")
 _sh = LD["shrinkage"]
 print(f"shrinkage intensity in the {_sh['n_wide_rois']} ROIs with V >= {WIDE_V} (ROI means):")
-print("   report model, in voxel-space terms: "
+print("   main model, in voxel-space terms: "
       f"{_sh['a_span_voxel_equiv_range_wide'][0]:.2f} to "
       f"{_sh['a_span_voxel_equiv_range_wide'][1]:.2f}")
 print(f"   voxel-space LW                    : {_sh['a_voxel_range_wide'][0]:.2f} to "
       f"{_sh['a_voxel_range_wide'][1]:.2f}")
 for v, d in LD["diff_vs_span_lw_pp"].items():
-    print(f"per-ROI difference {v} minus report model: {d['min']:+.1f} to {d['max']:+.1f} pp")
+    print(f"per-ROI difference {v} minus main model: {d['min']:+.1f} to {d['max']:+.1f} pp")
 print(f"ROIs with fewer than {17 * N_SEG} features: "
       f"{int((N_VOX * SEG_LEN < 17 * N_SEG).sum())}")
 print(f"time: {TIMINGS['3.5 LDA regulariser']:.0f} s")
@@ -1219,7 +1287,7 @@ jS, jN = CLF_NAMES.index("Linear SVM"), CLF_NAMES.index("Naive Bayes")
 # example ROIs: large auditory / largest default-mode / mid-sized / small
 LDA_ROIS = ["48 A1_R", "08 PREC_L", "12 pSTS_R", "15 aMTG_R"]
 _ld_tab = {r["roi"]: r for r in LD["table"]}
-_names = {"span_lw": "Report model: LW in the PCA span of the training fold",
+_names = {"span_lw": "Main model: LW in the PCA span of the training fold",
           "sklearn_auto": 'scikit-learn LDA, lsqr + shrinkage="auto", raw features',
           "voxel_lw": "Exact pooled LW in the 20·V voxel space"}
 show_table(pd.DataFrame(
@@ -1572,13 +1640,14 @@ def summarise_task_b(anat, hyper, reduced, resid_all):
         "hyper_mean_bigrois": h[big].mean(0).tolist(),
         "anat_mean_bigrois": a[big].mean(0).tolist(), "n_big": int(big.sum()),
         "table": [{"roi": labels[k], "n_vox": int(nvox[k]), "anat": a[k].tolist(),
-                   "hyper": h[k].tolist(), "gain": float(gm[k].mean()),
+                   "hyper": h[k].tolist(), "anat_sem": sem(A_, 1)[k].tolist(),
+                   "hyper_sem": sem(H_, 1)[k].tolist(), "gain": float(gm[k].mean()),
                    "gain_sem": float(gs[k]), "gain_p": float(pr[k]),
                    "gain_sig_fdr": bool(pr[k] <= thr), "resid_train": float(res[k, 0]),
                    "resid_heldout": float(res[k, 1])} for k in range(len(labels))],
     }
 
-
+# %%
 B = summarise_task_b(ANAT, HYPER, REDUCED, RESID)
 save_json(B, "part2b_summary.json")
 print(f"all ROIs and classifiers: {B['overall_anat']:.1f} % -> {B['overall_hyper']:.1f} %")
@@ -1878,7 +1947,7 @@ def seed_maps(Z, valid, seed_cols):
         isfc[i, ok] = seed @ others / T
     return fc, isfc
 
-
+# %%
 def plain_mean(r):
     """Arithmetic mean of r over subjects, as nanmean(csub_2, 2) in isfc_p2m_nifti.m."""
     with warnings.catch_warnings():
@@ -2165,11 +2234,18 @@ show_table(pd.DataFrame(
     [[r["roi"], r["n_vox"], *acc_sem_cells(r["acc"], r["sem"])] for r in A["table"]],
     columns=["ROI", "V", *CLF_NAMES]))
 
-# %% [prose] appB.h2
+# %% [prose] appB.h2 appB.p[0]
 
 # %%
 show_table(pd.DataFrame(
-    [[r["roi"], r["n_vox"], *[f"{x:.0f} → {y:.0f}" for x, y in zip(r["anat"], r["hyper"])],
+    [[r["roi"], r["n_vox"], *acc_sem_cells(r["anat"], r["anat_sem"])] for r in B["table"]],
+    columns=["ROI", "V", *CLF_NAMES]))
+
+# %% [prose] appB.p[1]
+
+# %%
+show_table(pd.DataFrame(
+    [[r["roi"], r["n_vox"], *acc_sem_cells(r["hyper"], r["hyper_sem"]),
       signed(r["gain"], "+.1f")] for r in B["table"]],
     columns=["ROI", "V", *CLF_NAMES, "Mean gain (pp)"]))
 

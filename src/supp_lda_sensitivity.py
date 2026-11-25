@@ -185,7 +185,7 @@ if __name__ == "__main__":
     assert same < 1e-9, f"span_lw does not reproduce the Task-A LDA accuracies (max diff {same})"
 
     out = {"design": "Task A design: 14 classes, 20*V features, LOSO over 18 subjects, 52 ROIs; accuracy in %",
-           "variants": {"span_lw": "report model: Ledoit-Wolf in the 238-dim PCA span of the training fold",
+           "variants": {"span_lw": "main model: Ledoit-Wolf in the 238-dim PCA span of the training fold",
                         "voxel_lw": "exact pooled Ledoit-Wolf in the 20*V voxel space",
                         "sklearn_auto": "equivalent of sklearn LDA(solver='lsqr', shrinkage='auto') on raw features"},
            "selfcheck": check, "span_lw_reproduces_part2a_lda": True, "clf": CLF_NAMES,
@@ -221,4 +221,4 @@ if __name__ == "__main__":
         print(f"{v:13s} mean {out['mean_over_rois'][v]:.1f} %  LDA best in {out['n_rois_lda_best'][v]:2d} ROIs  "
               f"best-by-clf {out['n_rois_best_by_clf'][v]}  top-3 {out['top3_rois'][v]}")
     print("shrinkage:", out["shrinkage"])
-    print("differences vs report model (pp):", out["diff_vs_span_lw_pp"])
+    print("differences vs main model (pp):", out["diff_vs_span_lw_pp"])

@@ -25,6 +25,8 @@ code { font-family: "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, mono
 pre { margin: 0; font-family: "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace; font-size: 7.7pt; line-height: 1.27;
       white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; orphans: 3; widows: 3; }
 .highlight { background: none; }
+/* keep a code cell together with the start of its output (figure or table) */
+div.input { break-after: avoid; page-break-after: avoid; }
 
 /* ---- outputs */
 .output_area { margin: 2pt 0; }

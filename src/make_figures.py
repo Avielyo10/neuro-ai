@@ -210,6 +210,7 @@ def part2b():
            "reduced_mean_bigrois": {str(int(k)): np.nanmean(R[big][:, i], axis=(0, 1)).tolist() for i, k in enumerate(klist)},
            "hyper_mean_bigrois": h[big].mean(0).tolist(), "anat_mean_bigrois": a[big].mean(0).tolist(), "n_big": int(big.sum()),
            "table": [{"roi": labels[k], "n_vox": int(nvox[k]), "anat": a[k].tolist(), "hyper": h[k].tolist(),
+                      "anat_sem": sem(A, 1)[k].tolist(), "hyper_sem": sem(H, 1)[k].tolist(),   # over the 18 folds
                       "gain": float(gm[k].mean()), "gain_sem": float(sem(gm, 1)[k]), "gain_p": float(pr[k]),
                       "gain_sig_fdr": bool(pr[k] <= thr),
                       "resid_train": float(res[k, 0]), "resid_heldout": float(res[k, 1])} for k in range(52)]}
