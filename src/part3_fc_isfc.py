@@ -8,18 +8,23 @@ This is a Python re-implementation of the course helpers run_isfc_p2m.m / isfc_p
 (same signal threshold of 6000 and the same 61 x 73 x 61 output grid); the leave-one-out averages
 are computed here instead of being read from the `avg` folder.  As in the helper, the group map is
 the plain (arithmetic) mean of the subject-level r maps; the mean after Fisher z-transformation is
-computed for comparison only.  helper_fc_map() is a line-by-line port of the helper's FC branch
-(within = 1) working on the raw .mat files; it is used to validate the vectorised implementation.
+computed for comparison only.  helper_maps() is a line-by-line port of the helper working on the raw
+.mat files; it is used to validate the vectorised implementation (FC always; ISFC if the course's
+precomputed leave-one-out averages are in data/avg, see scripts/download_data.sh).
 
 Common mask: a subject's FC is defined wherever that subject has valid signal, but leave-one-out ISFC
 needs enough other subjects.  So that FC and ISFC are drawn and summarised on the SAME voxels, both
-group maps are restricted to voxels that are valid in at least MIN_OTHERS + 1 = 10 of the 18 subjects.
+group maps are restricted to voxels that are valid in at least MIN_VALID = 10 of the 18 subjects.  The
+leave-one-out average of a subject is used where at least MIN_OTHERS = 10 of the other 17 subjects are
+valid, which is the mask stored in the course's avg files; the ISFC map is then defined on exactly
+the voxels of the common mask.
 
 Memory: the whole-brain array is 18 x 280 x ~76,000 float32 (1.5 GB on disk, cache/wholebrain.npz);
 building it from the .mat files needs about 8 GB of RAM.
 
 Run:  python src/part3_fc_isfc.py     (after part2a_decoding.py)
 """
+import glob
 import json
 import re
 import warnings
@@ -33,10 +38,13 @@ import numpy as np
 from nilearn import plotting
 from PIL import Image
 
-from common import (CACHE, FIGS, GRID, N_TR, RESULTS, SIGNAL_THRESHOLD, TEMPLATE, load_subject, load_voi,
+from scipy.io import loadmat
+
+from common import (CACHE, DATA, FIGS, GRID, N_TR, RESULTS, SIGNAL_THRESHOLD, TEMPLATE, load_subject, load_voi,
                     roi_labels, subject_files, voi_to_flat_index, zscore)
 
-MIN_OTHERS = 9      # ISFC needs a voxel to be valid in at least this many of the other 17 subjects
+MIN_OTHERS = 10     # ISFC needs a voxel to be valid in at least this many of the other 17 subjects
+MIN_VALID = 10      # both group maps: voxels valid in at least this many of the 18 subjects
 N_TOP = 3
 DISPLAY_THR = 0.15  # maps are displayed for |r| > 0.15
 EXTRA_SEEDS = ["08 PREC_L"]   # supplementary non-auditory seed (best default-mode ROI in Task A)
@@ -104,32 +112,39 @@ def plain_mean(r):
         return np.nanmean(r.astype(np.float64), axis=0)
 
 
-def helper_fc_map(seed_flat):
-    """Line-by-line port of the FC branch (within = 1) of isfc_p2m_nifti.m, from the raw files.
+def helper_maps(seed_flat, avg_files=None):
+    """Line-by-line port of isfc_p2m_nifti.m, working on the raw files.
 
     seed_flat: flat indices of the seed voxels on the 61 x 73 x 61 grid (the helper's `roimask`).
-    Returns the group map on the full grid (NaN where no subject has valid signal).
+    FC is the helper's branch within = 1.  ISFC (within = 0) is computed if `avg_files` is given: the
+    course's precomputed leave-one-out averages (folder `avg`, one file per subject in the sorted order
+    of the subject files; 280 rows of data and a last row that is the voxel mask).
+    Returns (fc_map, isfc_map or None) on the full grid, NaN where no subject has a value.
     """
     files = subject_files()
-    csub = None
+    n_vox = int(np.prod(GRID))
+    c_fc = np.full((n_vox, len(files)), np.nan)                     # csub_2, within = 1
+    c_isfc = np.full((n_vox, len(files)), np.nan) if avg_files else None   # csub_2, within = 0
+
+    def unit(x):                                                    # B = (B - mean) / (sqrt(Ns-1) std)
+        return (x - x.mean(0)) / (np.sqrt(len(x) - 1) * x.std(0, ddof=1))
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         for isub, f in enumerate(files):
-            bold = load_subject(f).astype(np.float64)               # bold_one_temp: (280, Nvox)
-            mask_single = bold.mean(0) > SIGNAL_THRESHOLD           # mean(bold_one_temp) > Bth
-            if csub is None:
-                csub = np.full((bold.shape[1], len(files)), np.nan)  # csub_2
-            bold[:, ~mask_single] = np.nan
-            roi = bold[:, seed_flat]                                # seed region, z-scored per voxel
+            bold = load_subject(f)                                  # bold_one_temp: (280, Nvox)
+            mask_single = bold.mean(0, dtype=np.float64) > SIGNAL_THRESHOLD   # mean(bold_one_temp) > Bth
+            roi = bold[:, seed_flat].astype(np.float64)             # seed region, z-scored per voxel
+            roi[:, ~mask_single[seed_flat]] = np.nan
             roi = (roi - roi.mean(0)) / roi.std(0, ddof=1)
-            b = np.nanmean(roi, axis=1)                             # bold_one
-            ns = len(b)
-            good = np.flatnonzero(mask_single)                      # gg_avg
-            b_avg = bold[:, good]
-            b = (b - b.mean()) / (np.sqrt(ns - 1) * b.std(ddof=1))
-            b_avg = (b_avg - b_avg.mean(0)) / (np.sqrt(ns - 1) * b_avg.std(0, ddof=1))
-            csub[good, isub] = b_avg.T @ b                          # cc
-        return np.nanmean(csub, axis=1)                             # avg_map_dmn
+            b = unit(np.nanmean(roi, axis=1))                       # bold_one -> B
+            good = np.flatnonzero(mask_single)                      # within = 1: gg_avg = find(mask_single)
+            c_fc[good, isub] = unit(bold[:, good].astype(np.float64)).T @ b
+            if avg_files:
+                bold_avg = loadmat(avg_files[isub])["bold_avg"]     # (281, Nvox), last row = mask_avg
+                good = np.flatnonzero(bold_avg[-1])                 # within = 0: gg_avg = find(mask_avg)
+                c_isfc[good, isub] = unit(bold_avg[:-1][:, good].astype(np.float64)).T @ b
+        return np.nanmean(c_fc, axis=1), (np.nanmean(c_isfc, axis=1) if avg_files else None)   # avg_map_dmn
 
 
 def fisher_mean(r):
@@ -174,12 +189,12 @@ def main():
     labels, vois = roi_labels(), load_voi()
     ref = nib.load(str(TEMPLATE))
     Z, valid, union = load_whole_brain()
-    keep = valid.sum(0) >= MIN_OTHERS + 1          # common FC / ISFC mask: valid in >= 10 subjects
+    keep = valid.sum(0) >= MIN_VALID               # common FC / ISFC mask: valid in >= 10 subjects
     print("whole-brain voxels (valid in >=1 subject):", len(union), "| valid in all 18:", int(valid.all(0).sum()),
-          f"| common map mask (valid in >= {MIN_OTHERS + 1}):", int(keep.sum()))
+          f"| common map mask (valid in >= {MIN_VALID}):", int(keep.sum()))
     seeds_all = top + [labels.index(e) for e in EXTRA_SEEDS]
     rank = [int(k) for k in np.argsort(-score)]
-    summary = {"min_valid_subjects": MIN_OTHERS + 1, "n_voxels_map_mask": int(keep.sum()),
+    summary = {"min_valid_subjects": MIN_VALID, "min_other_subjects": MIN_OTHERS, "n_voxels_map_mask": int(keep.sum()),
                "n_voxels_valid_any_subject": int(len(union)), "n_voxels_valid_all_subjects": int(valid.all(0).sum()),
                "threshold_display": DISPLAY_THR,
                "extra_seed_rank": {e: rank.index(labels.index(e)) + 1 for e in EXTRA_SEEDS},
@@ -196,11 +211,18 @@ def main():
         d_plain = max(float(np.max(np.abs(fisher_mean(m)[keep] - g[keep])))
                       for m, g in ((fc_s, fc), (isfc_s, isfc)))
         if k == top[0]:                             # validation against the port of the course helper
-            ref_map = helper_fc_map(flat)[union]
-            assert np.isfinite(ref_map[keep]).all()
+            avg_files = sorted(glob.glob(str(DATA / "avg" / "*.mat")))
+            assert len(avg_files) in (0, len(subject_files())), "data/avg is incomplete"
+            ref_fc, ref_isfc = helper_maps(flat, avg_files)
+            assert np.isfinite(ref_fc[union][keep]).all()
             summary["helper_check"] = {"seed": labels[k], "n_voxels": int(keep.sum()),
-                                       "max_abs_diff_fc": float(np.max(np.abs(ref_map[keep] - fc[keep])))}
-            print("FC map vs. port of isfc_p2m_nifti.m:", summary["helper_check"])
+                                       "max_abs_diff_fc": float(np.max(np.abs(ref_fc[union][keep] - fc[keep])))}
+            if avg_files:                           # the helper's ISFC map: defined on the same voxels?
+                same = bool(np.array_equal(np.flatnonzero(np.isfinite(ref_isfc)), union[keep]))
+                summary["helper_check"].update(
+                    isfc_same_voxels=same,
+                    max_abs_diff_isfc=float(np.max(np.abs(ref_isfc[union][keep] - isfc[keep]))))
+            print("maps vs. port of isfc_p2m_nifti.m:", summary["helper_check"])
         tag = labels[k].replace(" ", "_")
         for name, m in (("FC", fc), ("ISFC", isfc)):
             imgs[(k, name)] = to_img(m, union, ref)

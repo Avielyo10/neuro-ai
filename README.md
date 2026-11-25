@@ -84,4 +84,5 @@ Outputs: `submission/HW1_<id>.ipynb` (executed, with outputs), `submission/HW1_<
   with `gdown`. Peak memory is about 4.5 GB; the text cells are static and describe the run embedded in the file.
 
 The 18 subjects are those in `story_selected_reg_wm_csf_hsd_last_half2` (the folder used by the course
-helper scripts and containing the example subject `KM_060412`). The `avg` sub-folder is not used.
+helper scripts and containing the example subject `KM_060412`). The `avg` sub-folder (precomputed leave-one-out averages) is not used by the analysis; it serves only to
+validate the ISFC maps against a port of the course helper `isfc_p2m_nifti.m`.

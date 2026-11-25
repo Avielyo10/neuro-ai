@@ -105,7 +105,7 @@ def part2b():
         ax.plot([0, 100], [0, 100], "k-", lw=0.7); ax.axhline(CH7, color="k", ls=":", lw=0.7); ax.axvline(CH7, color="k", ls=":", lw=0.7)
         ax.set_xlim(0, 100); ax.set_ylim(0, 100); ax.set_aspect("equal")
         ax.set_title(f"{clf[j]}\n{a[:, j].mean():.1f} \u2192 {h[:, j].mean():.1f} %  "
-                     f"({(h[:, j] > a[:, j]).sum()}/52 ROIs improve)", fontsize=9.5)
+                     f"({(ch[:, j] > ca[:, j]).sum()}/52 ROIs improve)", fontsize=9.5)
         ax.set_xlabel("Anatomical alignment (%)"); ax.set_ylabel("Hyperalignment (%)")
     ax = axes.ravel()[7]
     x = np.arange(len(clf)); w = 0.38

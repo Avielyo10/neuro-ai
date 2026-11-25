@@ -1685,7 +1685,7 @@ for j, ax in enumerate(axes.ravel()[:7]):
     ax.set_ylim(0, 100)
     ax.set_aspect("equal")
     ax.set_title(f"{CLF_NAMES[j]}\n{a[:, j].mean():.1f} → {h[:, j].mean():.1f} %  "
-                 f"({(h[:, j] > a[:, j]).sum()}/52 ROIs improve)", fontsize=9.5)
+                 f"({B['n_improved'][j]}/52 ROIs improve)", fontsize=9.5)
     ax.set_xlabel("Anatomical alignment (%)")
     ax.set_ylabel("Hyperalignment (%)")
 ax = axes.ravel()[7]
@@ -1871,19 +1871,23 @@ show_figure(fig, "part2b_dimensionality.png", dpi=170, width=1000)
 #   signal, and a mask `valid` (18 × U). Peak memory of this step is about 2.5 GB.
 # - `seed_maps` computes the subject-level maps. FC: correlation of the subject's seed with
 #   the subject's own voxels. ISFC: correlation of the subject's seed with the z-scored mean
-#   of the other subjects at every voxel (leave-one-out), where at least 9 other subjects
-#   have valid signal.
+#   of the other subjects at every voxel (leave-one-out), where at least 10 of the other 17
+#   subjects have valid signal. This is the mask stored in the course's `avg` files.
 # - `plain_mean` averages the subject maps with an arithmetic mean of r, as the course helper
 #   does (`nanmean(csub_2, 2)` in `isfc_p2m_nifti.m`). `fisher_mean` (mean after Fisher
 #   z-transformation) is used for comparison only.
-# - `helper_fc_map` is a line-by-line port of the FC branch (`within = 1`) of
-#   `isfc_p2m_nifti.m`. It works on the raw subject files, independently of
-#   `load_whole_brain` and `seed_maps`, and is used to validate them for one seed.
+# - `helper_maps` is a line-by-line port of `isfc_p2m_nifti.m`. It works on the raw subject
+#   files, independently of `load_whole_brain` and `seed_maps`, and is used to validate them
+#   for one seed. Its FC branch (`within = 1`) needs nothing else. Its ISFC branch
+#   (`within = 0`) reads the leave-one-out averages that the course precomputed (folder
+#   `avg` next to the subject files). That folder is not needed for the analysis; if it is
+#   not there, the ISFC comparison is skipped.
 # - `probe_cols` returns the 3 × 3 × 3 voxel cube centred on a template coordinate; these
 #   cubes are used only to put numbers on the verbal description of the maps.
 
 # %%
-MIN_OTHERS = 9       # ISFC: a voxel must be valid in at least this many OTHER subjects
+MIN_OTHERS = 10      # ISFC: a voxel must be valid in at least this many OTHER subjects
+MIN_VALID = 10       # both group maps: voxels valid in at least this many of the 18 subjects
 N_TOP = 3
 DISPLAY_THR = 0.15   # maps are displayed for |r| > 0.15
 EXTRA_SEEDS = ["08 PREC_L"]    # supplementary non-auditory seed (best default-mode ROI)
@@ -1955,33 +1959,41 @@ def plain_mean(r):
         return np.nanmean(r.astype(np.float64), axis=0)
 
 
-def helper_fc_map(seed_flat):
-    """Line-by-line port of the FC branch (within = 1) of isfc_p2m_nifti.m, raw files.
+def helper_maps(seed_flat, avg_files=None):
+    """Line-by-line port of isfc_p2m_nifti.m, working on the raw files.
 
     seed_flat: flat indices of the seed voxels on the 61 x 73 x 61 grid (`roimask`).
-    Returns the group map on the full grid (NaN where no subject has valid signal).
+    FC is the helper's branch within = 1.  ISFC (within = 0) is computed if `avg_files` is
+    given: the course's precomputed leave-one-out averages (folder `avg`, one file per subject
+    in the sorted order of the subject files; 280 rows of data, last row = voxel mask).
+    Returns (fc_map, isfc_map or None) on the full grid, NaN where no subject has a value.
     The variable names of the MATLAB helper are given in the comments.
     """
-    csub = None
+    n_vox = int(np.prod(GRID))
+    c_fc = np.full((n_vox, N_SUB), np.nan)                       # csub_2, within = 1
+    c_isfc = np.full((n_vox, N_SUB), np.nan) if avg_files else None    # csub_2, within = 0
+
+    def unit(x):                                 # B = (B - mean(B)) / (sqrt(Ns - 1) * std(B))
+        return (x - x.mean(0)) / (np.sqrt(len(x) - 1) * x.std(0, ddof=1))
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         for isub, f in enumerate(SUBJECT_FILES):
-            bold = load_subject(f).astype(np.float64)        # bold_one_temp (280, Nvox)
-            mask_single = bold.mean(0) > SIGNAL_THRESHOLD    # mean(bold_one_temp) > Bth
-            if csub is None:
-                csub = np.full((bold.shape[1], N_SUB), np.nan)        # csub_2
-            bold[:, ~mask_single] = np.nan
-            roi = bold[:, seed_flat]                         # ROI: seed voxels, z-scored
+            bold = load_subject(f)                               # bold_one_temp (280, Nvox)
+            mask_single = bold.mean(0, dtype=np.float64) > SIGNAL_THRESHOLD   # mean > Bth
+            roi = bold[:, seed_flat].astype(np.float64)          # ROI: seed voxels, z-scored
+            roi[:, ~mask_single[seed_flat]] = np.nan
             roi = (roi - roi.mean(0)) / roi.std(0, ddof=1)
-            b = np.nanmean(roi, axis=1)                      # bold_one / B
-            ns = len(b)
-            good = np.flatnonzero(mask_single)               # gg_avg
-            b_avg = bold[:, good]                            # B_avg
-            b = (b - b.mean()) / (np.sqrt(ns - 1) * b.std(ddof=1))
-            b_avg = (b_avg - b_avg.mean(0)) / (np.sqrt(ns - 1) * b_avg.std(0, ddof=1))
-            csub[good, isub] = b_avg.T @ b                   # cc
-            del bold, b_avg
-        return np.nanmean(csub, axis=1)                      # avg_map_dmn
+            b = unit(np.nanmean(roi, axis=1))                    # bold_one -> B
+            good = np.flatnonzero(mask_single)                   # gg_avg = find(mask_single)
+            c_fc[good, isub] = unit(bold[:, good].astype(np.float64)).T @ b           # cc
+            if avg_files:
+                bold_avg = loadmat(avg_files[isub])["bold_avg"]  # (281, Nvox), last row: mask
+                good = np.flatnonzero(bold_avg[-1])              # gg_avg = find(mask_avg)
+                c_isfc[good, isub] = unit(bold_avg[:-1][:, good].astype(np.float64)).T @ b
+            del bold
+        isfc_map = np.nanmean(c_isfc, axis=1) if avg_files else None
+        return np.nanmean(c_fc, axis=1), isfc_map                # avg_map_dmn
 
 
 def fisher_mean(r):
@@ -2009,146 +2021,9 @@ def to_img(values, union):
     return nib.Nifti1Image(vol.reshape(GRID, order="F"), TEMPLATE_IMG.affine)
 
 # %% [markdown]
-# ### 5.2 Whole-brain data and maps
-#
-# The first cell loads the whole-brain data (about half a minute). The second cell computes the
-# FC and ISFC maps of the three top seeds and of the supplementary precuneus seed, restricts
-# both group maps to the common mask (voxels that are valid in at least 10 of the 18
-# subjects), writes them as NIfTI files to the work directory, and collects the summary
-# numbers of each seed (about half a minute). For the first seed the FC map is also computed
-# with the port of the course helper from the raw files (about one more minute) and compared.
-
-# %%
-_t = time.time()
-Z, valid, union = load_whole_brain()
-keep = valid.sum(0) >= MIN_OTHERS + 1          # common FC / ISFC mask: valid in >= 10 subjects
-TIMINGS["5.2 whole-brain loading"] = time.time() - _t
-print(f"Z: {Z.shape}, {Z.dtype}, {Z.nbytes / 1e9:.2f} GB")
-print(f"voxels valid in at least one subject: {len(union):,}; valid in all {N_SUB}: "
-      f"{int(valid.all(0).sum()):,}")
-print(f"common map mask (valid in >= {MIN_OTHERS + 1} subjects): {int(keep.sum()):,} voxels")
-print(f"time: {TIMINGS['5.2 whole-brain loading']:.0f} s")
-
-# %%
-_t = time.time()
-top, score = top_rois(ACC_A)
-rank = [int(k) for k in np.argsort(-score)]
-seeds_all = top + [LABELS.index(e) for e in EXTRA_SEEDS]
-P3 = {"min_valid_subjects": MIN_OTHERS + 1, "n_voxels_map_mask": int(keep.sum()),
-      "n_voxels_valid_any_subject": int(len(union)),
-      "n_voxels_valid_all_subjects": int(valid.all(0).sum()),
-      "threshold_display": DISPLAY_THR,
-      "extra_seed_rank": {e: rank.index(LABELS.index(e)) + 1 for e in EXTRA_SEEDS},
-      "extra_seeds": EXTRA_SEEDS, "top_rois": [LABELS[k] for k in top],
-      "mean_acc_pct": [float(score[k] * 100) for k in top],
-      "rank4": [LABELS[rank[3]], float(np.sort(score)[-4] * 100)], "seeds": {}}
-print("top-3 ROIs of Task A (mean over the 7 classifiers):")
-print("   " + ", ".join(f"{LABELS[k]} ({score[k] * 100:.1f} %)" for k in top)
-      + f"; rank 4: {P3['rank4'][0]} ({P3['rank4'][1]:.1f} %)")
-print("top 3 by best single classifier:", ", ".join(A["top3_by_best_single_clf"]))
-print("top 3 by the linear SVM        :", ", ".join(A["top3_by_clf"]["Linear SVM"]))
-print(f"\nvoxels beyond the display threshold (|r| > {DISPLAY_THR}), FC / ISFC:")
-print(f"   {'seed':12s} {'V':>4s}   {'r > ' + str(DISPLAY_THR):>16s}   "
-      f"{'r < ' + MINUS + str(DISPLAY_THR):>16s}")
-
-imgs = {}
-for k in seeds_all:
-    flat = voi_to_flat_index(VOIS[k][1])
-    seed_cols = np.searchsorted(union, flat[np.isin(flat, union)])
-    fc_s, isfc_s = seed_maps(Z, valid, seed_cols)
-    fc, isfc = plain_mean(fc_s), plain_mean(isfc_s)     # helper convention: mean of r
-    fc[~keep] = np.nan                           # the same voxels in both maps
-    isfc[~keep] = np.nan
-    assert np.array_equal(np.isfinite(fc), keep) and np.array_equal(np.isfinite(isfc), keep)
-    # for comparison only: largest difference to the mean after Fisher z-transformation
-    d_plain = max(float(np.max(np.abs(fisher_mean(m_)[keep] - g_[keep])))
-                  for m_, g_ in ((fc_s, fc), (isfc_s, isfc)))
-    if k == top[0]:           # validation against the port of the course helper (raw files)
-        ref_map = helper_fc_map(flat)[union]
-        assert np.isfinite(ref_map[keep]).all()
-        P3["helper_check"] = {
-            "seed": LABELS[k], "n_voxels": int(keep.sum()),
-            "max_abs_diff_fc": float(np.max(np.abs(ref_map[keep] - fc[keep])))}
-        del ref_map
-    tag = LABELS[k].replace(" ", "_")
-    for name, m_ in (("FC", fc), ("ISFC", isfc)):
-        imgs[(k, name)] = to_img(m_, union)
-        nib.save(imgs[(k, name)], str(WORK / f"map_{name}_{tag}.nii.gz"))
-    outside = np.ones(len(union), bool)
-    outside[seed_cols] = False
-    both = keep & outside                        # map voxels outside the seed
-    ijk = np.array(np.unravel_index(flat, GRID, order="F")).T
-    com = nib.affines.apply_affine(TEMPLATE_IMG.affine, ijk.mean(0))
-    P3["seeds"][LABELS[k]] = {
-        "n_seed_voxels": int(len(seed_cols)), "seed_center_mm": [float(c) for c in com],
-        "fc_mean_r": float(fc[both].mean()), "isfc_mean_r": float(isfc[both].mean()),
-        "fc_median_r": float(np.median(fc[both])),
-        "isfc_median_r": float(np.median(isfc[both])),
-        "fc_frac_gt_0.2": float((fc[both] > 0.2).mean()),
-        "isfc_frac_gt_0.2": float((isfc[both] > 0.2).mean()),
-        "fc_frac_lt_-0.1": float((fc[both] < -0.1).mean()),
-        "isfc_frac_lt_-0.1": float((isfc[both] < -0.1).mean()),
-        "fc_max_r_outside_seed": float(fc[both].max()),
-        "isfc_max_r_outside_seed": float(isfc[both].max()),
-        "spatial_corr_fc_isfc": float(np.corrcoef(fc[both], isfc[both])[0, 1]),
-        "isfc_within_seed_mean_r": float(np.nanmean(isfc[seed_cols])),
-        "fc_within_seed_mean_r": float(np.nanmean(fc[seed_cols])),
-        "n_seed_voxels_in_mask": int(keep[seed_cols].sum()),
-        "n_fc_gt_thr": int((fc[keep] > DISPLAY_THR).sum()),
-        "n_isfc_gt_thr": int((isfc[keep] > DISPLAY_THR).sum()),
-        "n_fc_lt_neg_thr": int((fc[keep] < -DISPLAY_THR).sum()),
-        "n_isfc_lt_neg_thr": int((isfc[keep] < -DISPLAY_THR).sum()),
-        "max_abs_diff_fisher_vs_plain_mean": d_plain,
-        "probes": {name: {"mm": list(xyz), "n_vox": int(keep[c].sum()),
-                          "fc": float(np.nanmean(fc[c])), "isfc": float(np.nanmean(isfc[c]))}
-                   for name, xyz in PROBES.items() for c in [probe_cols(xyz, union)]},
-    }
-    _s = P3["seeds"][LABELS[k]]
-    print(f"   {LABELS[k]:12s} {_s['n_seed_voxels']:4d}   "
-          f"{_s['n_fc_gt_thr']:7,} / {_s['n_isfc_gt_thr']:6,}   "
-          f"{_s['n_fc_lt_neg_thr']:7,} / {_s['n_isfc_lt_neg_thr']:6,}")
-save_json(P3, "part3_summary.json")
-_dmax = max(s["max_abs_diff_fisher_vs_plain_mean"] for s in P3["seeds"].values())
-print(f"largest difference between the plain mean of r (used) and the Fisher-z mean: "
-      f"{_dmax:.3f}")
-_hc = P3["helper_check"]
-print(f"FC map of seed {_hc['seed']} vs. the port of isfc_p2m_nifti.m: largest difference "
-      f"{_hc['max_abs_diff_fc']:.1e} over {_hc['n_voxels']:,} voxels")
-
-print("\nFC / ISFC at the probe locations (mean over the 3 x 3 x 3 voxel cube), per seed:")
-show_table(pd.DataFrame(
-    [[name, ", ".join(str(c).replace("-", MINUS) for c in xyz),
-      *[f"{signed(s['probes'][name]['fc'], '.2f')} / {signed(s['probes'][name]['isfc'], '.2f')}"
-        for s in P3["seeds"].values()]] for name, xyz in PROBES.items()],
-    columns=["Probe location", "x, y, z (mm)", *P3["seeds"]]))
-
-# the whole-brain array is not needed any more
-del Z, fc_s, isfc_s
-gc.collect()
-TIMINGS["5.2 FC / ISFC maps"] = time.time() - _t
-print(f"time: {TIMINGS['5.2 FC / ISFC maps']:.0f} s")
-
-# %% [markdown]
-# ### 5.3 Results
-
-# %%
-show_table(pd.DataFrame(
-    [[name, s["n_seed_voxels"],
-      f"{s['fc_within_seed_mean_r']:.2f} / {s['isfc_within_seed_mean_r']:.2f}",
-      f"{s['fc_mean_r']:.3f} / {s['isfc_mean_r']:.3f}",
-      f"{100 * s['fc_frac_gt_0.2']:.1f} % / {100 * s['isfc_frac_gt_0.2']:.1f} %",
-      f"{s['fc_max_r_outside_seed']:.2f} / {s['isfc_max_r_outside_seed']:.2f}",
-      f"{s['spatial_corr_fc_isfc']:.2f}"] for name, s in P3["seeds"].items()],
-    columns=["Seed", "V", "Mean r inside seed (FC / ISFC)",
-             "Mean r, rest of brain (FC / ISFC)", "Voxels with r &gt; 0.2 (FC / ISFC)",
-             "Max r outside seed (FC / ISFC)", "Spatial corr. FC vs ISFC"]))
-
-# %% [prose] fc.cap
-
-# %% [markdown]
-# The next cell defines the plotting function: for one seed, FC (top) and ISFC (bottom), each
-# as orthogonal views through the centre of the seed and as a row of axial slices, on the
-# same colour scale.
+# The last cell of this section defines the plotting function used in Section 5.3: for one
+# seed, FC (top) and ISFC (bottom), each as orthogonal views through the centre of the seed
+# and as a row of axial slices, on the same colour scale.
 
 # %%
 def typographic_minus(fig):
@@ -2191,6 +2066,156 @@ def plot_seed_maps(k, width=720):
     im.crop((max(box[0] - 20, 0), max(box[1] - 20, 0), min(box[2] + 20, im.width),
              min(box[3] + 20, im.height))).save(path)
     display(Image(filename=str(path), width=width))
+
+# %% [markdown]
+# ### 5.2 Whole-brain data and maps
+#
+# The first cell loads the whole-brain data (about half a minute). The second cell computes the
+# FC and ISFC maps of the three top seeds and of the supplementary precuneus seed, restricts
+# both group maps to the common mask (voxels that are valid in at least 10 of the 18
+# subjects), writes them as NIfTI files to the work directory, and collects the summary
+# numbers of each seed (about half a minute). For the first seed the maps are also computed
+# with the port of the course helper from the raw files (about one more minute) and compared.
+
+# %%
+_t = time.time()
+Z, valid, union = load_whole_brain()
+keep = valid.sum(0) >= MIN_VALID               # common FC / ISFC mask: valid in >= 10 subjects
+TIMINGS["5.2 whole-brain loading"] = time.time() - _t
+print(f"Z: {Z.shape}, {Z.dtype}, {Z.nbytes / 1e9:.2f} GB")
+print(f"voxels valid in at least one subject: {len(union):,}; valid in all {N_SUB}: "
+      f"{int(valid.all(0).sum()):,}")
+print(f"common map mask (valid in >= {MIN_VALID} subjects): {int(keep.sum()):,} voxels")
+print(f"time: {TIMINGS['5.2 whole-brain loading']:.0f} s")
+
+# %%
+_t = time.time()
+top, score = top_rois(ACC_A)
+rank = [int(k) for k in np.argsort(-score)]
+seeds_all = top + [LABELS.index(e) for e in EXTRA_SEEDS]
+P3 = {"min_valid_subjects": MIN_VALID, "min_other_subjects": MIN_OTHERS,
+      "n_voxels_map_mask": int(keep.sum()),
+      "n_voxels_valid_any_subject": int(len(union)),
+      "n_voxels_valid_all_subjects": int(valid.all(0).sum()),
+      "threshold_display": DISPLAY_THR,
+      "extra_seed_rank": {e: rank.index(LABELS.index(e)) + 1 for e in EXTRA_SEEDS},
+      "extra_seeds": EXTRA_SEEDS, "top_rois": [LABELS[k] for k in top],
+      "mean_acc_pct": [float(score[k] * 100) for k in top],
+      "rank4": [LABELS[rank[3]], float(np.sort(score)[-4] * 100)], "seeds": {}}
+print("top-3 ROIs of Task A (mean over the 7 classifiers):")
+print("   " + ", ".join(f"{LABELS[k]} ({score[k] * 100:.1f} %)" for k in top)
+      + f"; rank 4: {P3['rank4'][0]} ({P3['rank4'][1]:.1f} %)")
+print("top 3 by best single classifier:", ", ".join(A["top3_by_best_single_clf"]))
+print("top 3 by the linear SVM        :", ", ".join(A["top3_by_clf"]["Linear SVM"]))
+print(f"\nvoxels beyond the display threshold (|r| > {DISPLAY_THR}), FC / ISFC:")
+print(f"   {'seed':12s} {'V':>4s}   {'r > ' + str(DISPLAY_THR):>16s}   "
+      f"{'r < ' + MINUS + str(DISPLAY_THR):>16s}")
+
+imgs = {}
+for k in seeds_all:
+    flat = voi_to_flat_index(VOIS[k][1])
+    seed_cols = np.searchsorted(union, flat[np.isin(flat, union)])
+    fc_s, isfc_s = seed_maps(Z, valid, seed_cols)
+    fc, isfc = plain_mean(fc_s), plain_mean(isfc_s)     # helper convention: mean of r
+    fc[~keep] = np.nan                           # the same voxels in both maps
+    isfc[~keep] = np.nan
+    assert np.array_equal(np.isfinite(fc), keep) and np.array_equal(np.isfinite(isfc), keep)
+    # for comparison only: largest difference to the mean after Fisher z-transformation
+    d_plain = max(float(np.max(np.abs(fisher_mean(m_)[keep] - g_[keep])))
+                  for m_, g_ in ((fc_s, fc), (isfc_s, isfc)))
+    if k == top[0]:           # validation against the port of the course helper (raw files)
+        avg_files = sorted(glob.glob(str(subject_dir(DATA) / "avg" / "*.mat")))
+        assert len(avg_files) in (0, N_SUB), "the avg folder is incomplete"
+        ref_fc, ref_isfc = helper_maps(flat, avg_files)
+        assert np.isfinite(ref_fc[union][keep]).all()
+        P3["helper_check"] = {
+            "seed": LABELS[k], "n_voxels": int(keep.sum()),
+            "max_abs_diff_fc": float(np.max(np.abs(ref_fc[union][keep] - fc[keep])))}
+        if avg_files:         # is the helper's ISFC map defined on the same voxels?
+            _same = np.array_equal(np.flatnonzero(np.isfinite(ref_isfc)), union[keep])
+            P3["helper_check"].update(
+                isfc_same_voxels=bool(_same),
+                max_abs_diff_isfc=float(np.max(np.abs(ref_isfc[union][keep] - isfc[keep]))))
+        del ref_fc, ref_isfc
+    tag = LABELS[k].replace(" ", "_")
+    for name, m_ in (("FC", fc), ("ISFC", isfc)):
+        imgs[(k, name)] = to_img(m_, union)
+        nib.save(imgs[(k, name)], str(WORK / f"map_{name}_{tag}.nii.gz"))
+    outside = np.ones(len(union), bool)
+    outside[seed_cols] = False
+    both = keep & outside                        # map voxels outside the seed
+    ijk = np.array(np.unravel_index(flat, GRID, order="F")).T
+    com = nib.affines.apply_affine(TEMPLATE_IMG.affine, ijk.mean(0))
+    P3["seeds"][LABELS[k]] = {
+        "n_seed_voxels": int(len(seed_cols)), "seed_center_mm": [float(c) for c in com],
+        "fc_mean_r": float(fc[both].mean()), "isfc_mean_r": float(isfc[both].mean()),
+        "fc_median_r": float(np.median(fc[both])),
+        "isfc_median_r": float(np.median(isfc[both])),
+        "fc_frac_gt_0.2": float((fc[both] > 0.2).mean()),
+        "isfc_frac_gt_0.2": float((isfc[both] > 0.2).mean()),
+        "fc_frac_lt_-0.1": float((fc[both] < -0.1).mean()),
+        "isfc_frac_lt_-0.1": float((isfc[both] < -0.1).mean()),
+        "fc_max_r_outside_seed": float(fc[both].max()),
+        "isfc_max_r_outside_seed": float(isfc[both].max()),
+        "spatial_corr_fc_isfc": float(np.corrcoef(fc[both], isfc[both])[0, 1]),
+        "isfc_within_seed_mean_r": float(np.nanmean(isfc[seed_cols])),
+        "fc_within_seed_mean_r": float(np.nanmean(fc[seed_cols])),
+        "n_seed_voxels_in_mask": int(keep[seed_cols].sum()),
+        "n_fc_gt_thr": int((fc[keep] > DISPLAY_THR).sum()),
+        "n_isfc_gt_thr": int((isfc[keep] > DISPLAY_THR).sum()),
+        "n_fc_lt_neg_thr": int((fc[keep] < -DISPLAY_THR).sum()),
+        "n_isfc_lt_neg_thr": int((isfc[keep] < -DISPLAY_THR).sum()),
+        "max_abs_diff_fisher_vs_plain_mean": d_plain,
+        "probes": {name: {"mm": list(xyz), "n_vox": int(keep[c].sum()),
+                          "fc": float(np.nanmean(fc[c])), "isfc": float(np.nanmean(isfc[c]))}
+                   for name, xyz in PROBES.items() for c in [probe_cols(xyz, union)]},
+    }
+    _s = P3["seeds"][LABELS[k]]
+    print(f"   {LABELS[k]:12s} {_s['n_seed_voxels']:4d}   "
+          f"{_s['n_fc_gt_thr']:7,} / {_s['n_isfc_gt_thr']:6,}   "
+          f"{_s['n_fc_lt_neg_thr']:7,} / {_s['n_isfc_lt_neg_thr']:6,}")
+save_json(P3, "part3_summary.json")
+_dmax = max(s["max_abs_diff_fisher_vs_plain_mean"] for s in P3["seeds"].values())
+print(f"largest difference between the plain mean of r (used) and the Fisher-z mean: "
+      f"{_dmax:.3f}")
+_hc = P3["helper_check"]
+print(f"seed {_hc['seed']}, maps vs. the port of isfc_p2m_nifti.m over {_hc['n_voxels']:,} "
+      f"voxels:\n   FC: largest difference {_hc['max_abs_diff_fc']:.1e}")
+if "max_abs_diff_isfc" in _hc:
+    print(f"   ISFC (course avg files): largest difference {_hc['max_abs_diff_isfc']:.1e}; "
+          f"defined on the same voxels: {_hc['isfc_same_voxels']}")
+else:
+    print("   ISFC: not compared (no avg folder next to the subject files)")
+
+print("\nFC / ISFC at the probe locations (mean over the 3 x 3 x 3 voxel cube), per seed:")
+show_table(pd.DataFrame(
+    [[name, ", ".join(str(c).replace("-", MINUS) for c in xyz),
+      *[f"{signed(s['probes'][name]['fc'], '.2f')} / {signed(s['probes'][name]['isfc'], '.2f')}"
+        for s in P3["seeds"].values()]] for name, xyz in PROBES.items()],
+    columns=["Probe location", "x, y, z (mm)", *P3["seeds"]]))
+
+# the whole-brain array is not needed any more
+del Z, fc_s, isfc_s
+gc.collect()
+TIMINGS["5.2 FC / ISFC maps"] = time.time() - _t
+print(f"time: {TIMINGS['5.2 FC / ISFC maps']:.0f} s")
+
+# %% [markdown]
+# ### 5.3 Results
+
+# %%
+show_table(pd.DataFrame(
+    [[name, s["n_seed_voxels"],
+      f"{s['fc_within_seed_mean_r']:.2f} / {s['isfc_within_seed_mean_r']:.2f}",
+      f"{s['fc_mean_r']:.3f} / {s['isfc_mean_r']:.3f}",
+      f"{100 * s['fc_frac_gt_0.2']:.1f} % / {100 * s['isfc_frac_gt_0.2']:.1f} %",
+      f"{s['fc_max_r_outside_seed']:.2f} / {s['isfc_max_r_outside_seed']:.2f}",
+      f"{s['spatial_corr_fc_isfc']:.2f}"] for name, s in P3["seeds"].items()],
+    columns=["Seed", "V", "Mean r inside seed (FC / ISFC)",
+             "Mean r, rest of brain (FC / ISFC)", "Voxels with r &gt; 0.2 (FC / ISFC)",
+             "Max r outside seed (FC / ISFC)", "Spatial corr. FC vs ISFC"]))
+
+# %% [prose] fc.cap
 
 # %%
 _t = time.time()

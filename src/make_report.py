@@ -95,6 +95,8 @@ sh = LD["shrinkage"]
 fisher_diff = max(s["max_abs_diff_fisher_vs_plain_mean"] for s in P3["seeds"].values())
 hc = P3["helper_check"]
 check(hc["max_abs_diff_fc"] < 1e-6, "FC map no longer agrees with the port of the course helper")
+check(hc.get("max_abs_diff_isfc", 1) < 1e-6 and hc.get("isfc_same_voxels") is True,
+      "ISFC map not compared with, or no longer equal to, the port of the course helper (data/avg present?)")
 hc_txt = "10\u207b\u2076"
 
 # ---------------------------------------------------------------- Task 0
@@ -366,9 +368,9 @@ The LDA results depend on this choice; Section 3 (Table {TAB['lda']}) compares i
 Within every LOSO fold the template is built from the 17 training subjects only; the held-out subject is brought into the common space by a rotation estimated from its own alignment half against that template.
 The anatomical baseline is the identical 7-class split-half procedure with R = I. Optionally the common space was reduced to the top-k principal axes of the training template (k = {min(B['k_list'])}&ndash;{k_max}).</p>
 <p><b>FC / ISFC (Part 3).</b> Python re-implementation of <code>run_isfc_p2m</code> / <code>isfc_p2m_nifti</code>. The seed time course is the mean of the z-scored seed voxels.
-FC: Pearson r between a subject's seed and all of that subject's own voxels. ISFC: r between the seed of subject i and every voxel of the average of the other 17 subjects (leave-one-out; averages computed here, the <code>avg</code> folder was not used).
+FC: Pearson r between a subject's seed and all of that subject's own voxels. ISFC: r between the seed of subject i and every voxel of the average of the other 17 subjects (leave-one-out; the averages are computed here from the z-scored data, at voxels with valid signal in at least {P3['min_other_subjects']} of the other subjects, which is the mask of the course's precomputed <code>avg</code> files).
 As in the helper, the group map is the arithmetic mean of the 18 subject maps of r (averaging after Fisher z-transformation instead changes no voxel by more than {fisher_diff:.2f}); the maps were written as NIfTI (<code>results/map_*.nii.gz</code>).
-The MATLAB helper itself could not be run here (it needs MATLAB with NeuroElf), so its FC branch was ported line by line and run on the raw files for seed {hc['seed']}: the map agrees with the implementation used here to within {hc_txt} at all {hc['n_voxels']:,} mask voxels.
+The MATLAB helper itself could not be run here (it needs MATLAB with NeuroElf), so it was ported line by line and run on the raw files for seed {hc['seed']}; its ISFC branch reads the course's <code>avg</code> files, which were used for this comparison only. Both maps agree with the implementation used here to within {hc_txt} at all {hc['n_voxels']:,} mask voxels, and the helper's ISFC map is defined on exactly these voxels.
 So that FC and ISFC are compared on identical voxels, both group maps are restricted to the {P3['n_voxels_map_mask']:,} voxels with valid signal in at least {P3['min_valid_subjects']} of the 18 subjects.</p>"""
 
 BLK["task0"] = f"""<h2>2. Task 0 &ndash; Stimulus&ndash;brain alignment in A1</h2>
