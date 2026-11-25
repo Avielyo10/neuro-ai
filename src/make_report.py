@@ -539,26 +539,34 @@ ORDER = ["title", "methods", "task0", "subj",
          "h5seed", "m1", "fc", "m2", "m3", "a", "b", "m4", "c",
          "limits", "refs", "appA", "appB"]
 assert sorted(ORDER) == sorted(BLK), set(ORDER) ^ set(BLK)
-html = CSS + "\n".join(BLK[k] for k in ORDER) + "\n</body></html>"
 
-# captions must appear in numerical order, and every table / figure must be present exactly once
-for kind, numbering in (("Table", TAB), ("Figure", FIG)):
-    found = [int(x) for x in re.findall(rf"<b>{kind} (\d+)\.</b>", html)]
-    check(found == list(range(1, len(numbering) + 1)), f"{kind} captions out of order: {found}")
 
-out = ROOT / "report" / "report.html"
-out.write_text(html)
-pdf = ROOT / "report" / "Homework1_Report.pdf"
-footer = ('<div style="font-family:Arial,sans-serif;font-size:7.5pt;color:#666;width:100%;text-align:center">'
-          '<span class="pageNumber"></span> / <span class="totalPages"></span></div>')
-js = ("const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage();"
-      f"await p.goto('file://{out}');await p.pdf({{path:'{pdf}',format:'A4',printBackground:true,"
-      f"displayHeaderFooter:true,headerTemplate:'<span></span>',footerTemplate:{json.dumps(footer)}}});await b.close();}})();")
-print(f"HTML written: {out}")
-try:
-    r = subprocess.run(["node", "-e", js], capture_output=True, text=True)
-except FileNotFoundError:
-    raise SystemExit("node not found: the PDF was NOT rebuilt (see README, 'PDF build'); print report.html from a browser instead")
-if r.returncode != 0:
-    raise SystemExit("PDF step failed (is the playwright npm package with Chromium installed?):\n" + r.stderr)
-print(f"PDF written: {pdf}")
+def main():
+    """Write report/report.html and convert it to report/Homework1_Report.pdf."""
+    html = CSS + "\n".join(BLK[k] for k in ORDER) + "\n</body></html>"
+
+    # captions must appear in numerical order, and every table / figure must be present exactly once
+    for kind, numbering in (("Table", TAB), ("Figure", FIG)):
+        found = [int(x) for x in re.findall(rf"<b>{kind} (\d+)\.</b>", html)]
+        check(found == list(range(1, len(numbering) + 1)), f"{kind} captions out of order: {found}")
+
+    out = ROOT / "report" / "report.html"
+    out.write_text(html)
+    pdf = ROOT / "report" / "Homework1_Report.pdf"
+    footer = ('<div style="font-family:Arial,sans-serif;font-size:7.5pt;color:#666;width:100%;text-align:center">'
+              '<span class="pageNumber"></span> / <span class="totalPages"></span></div>')
+    js = ("const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage();"
+          f"await p.goto('file://{out}');await p.pdf({{path:'{pdf}',format:'A4',printBackground:true,"
+          f"displayHeaderFooter:true,headerTemplate:'<span></span>',footerTemplate:{json.dumps(footer)}}});await b.close();}})();")
+    print(f"HTML written: {out}")
+    try:
+        r = subprocess.run(["node", "-e", js], capture_output=True, text=True)
+    except FileNotFoundError:
+        raise SystemExit("node not found: the PDF was NOT rebuilt (see README, 'PDF build'); print report.html from a browser instead")
+    if r.returncode != 0:
+        raise SystemExit("PDF step failed (is the playwright npm package with Chromium installed?):\n" + r.stderr)
+    print(f"PDF written: {pdf}")
+
+
+if __name__ == "__main__":
+    main()

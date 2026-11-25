@@ -9,3 +9,11 @@ nilearn
 joblib
 pillow
 gdown
+# only for the submission package (notebook/build_submission.py): the notebook itself uses pandas,
+# the build needs nbformat, nbclient, nbconvert, ipykernel and psutil (plus node + playwright and poppler for the PDF)
+pandas
+nbformat
+nbclient
+nbconvert
+ipykernel
+psutil

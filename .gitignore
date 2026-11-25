@@ -5,3 +5,4 @@ __pycache__/
 filelist.tsv
 dl.txt
 report/report.html
+submission/

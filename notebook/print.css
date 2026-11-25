@@ -1,0 +1,46 @@
+/* Style sheet of the PDF printout of the notebook (A4).  Used by build_submission.py on the
+   HTML that nbconvert's "basic" template produces; it is not part of the notebook itself. */
+@page { size: A4; margin: 13mm 12mm 14mm 12mm; }
+html { font-size: 9.6pt; }
+body { margin: 0; font-family: Arial, "Liberation Sans", Helvetica, sans-serif; line-height: 1.38; color: #111; }
+.prompt, .anchor-link { display: none; }
+
+/* ---- text cells */
+.text_cell_render { margin: 0; }
+h1 { font-size: 16pt; line-height: 1.2; margin: 0 0 6pt; }
+h2 { font-size: 13pt; color: #1f3a5f; border-bottom: 1.2px solid #1f3a5f; margin: 14pt 0 5pt; padding-bottom: 1pt; }
+h3 { font-size: 11pt; color: #1f3a5f; margin: 10pt 0 3pt; }
+h4 { font-size: 10pt; color: #1f3a5f; margin: 8pt 0 2pt; }
+h1, h2, h3, h4 { break-after: avoid; page-break-after: avoid; }
+p { margin: 4pt 0; text-align: justify; orphans: 3; widows: 3; }
+ul, ol { margin: 3pt 0; padding-left: 16pt; }
+li { margin-bottom: 2.5pt; text-align: justify; }
+code { font-family: "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace; font-size: 8.3pt; background: #f1f2f4; padding: 0 1.5pt; border-radius: 2px; }
+.caption { break-before: avoid; page-break-before: avoid; }
+.new-page { break-before: page; page-break-before: always; }
+.caption p { font-size: 8.6pt; color: #333; margin: 2pt 0 9pt; }
+
+/* ---- code cells */
+.input_area { background: #f6f7f9; border: 0.5pt solid #d3d7dc; border-left: 2.2pt solid #1f3a5f; border-radius: 2px; padding: 3.5pt 5pt; margin: 6pt 0 3pt; }
+pre { margin: 0; font-family: "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace; font-size: 7.7pt; line-height: 1.27;
+      white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; orphans: 3; widows: 3; }
+.highlight { background: none; }
+
+/* ---- outputs */
+.output_area { margin: 2pt 0; }
+.output_text pre, .output_stream pre { font-size: 7.5pt; color: #222; padding: 1pt 5pt 1pt 7pt; border-left: 2.2pt solid #c9ced6; }
+.output_png { text-align: center; break-inside: avoid; page-break-inside: avoid; margin: 5pt 0 0; }
+.output_png img { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+
+/* ---- tables (markdown tables and DataFrames) */
+table { border-collapse: collapse; margin: 5pt auto 3pt; font-size: 7.9pt; line-height: 1.25; }
+table[data-short] { break-inside: avoid; page-break-inside: avoid; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; page-break-inside: avoid; }
+th { background: #1f3a5f; color: #fff; font-weight: bold; padding: 2.5pt 5pt; text-align: center; vertical-align: middle; border: 0.4pt solid #1f3a5f; }
+td { padding: 1.8pt 5pt; border-bottom: 0.4pt solid #cfd3d8; text-align: center; vertical-align: top; }
+td:first-child { text-align: left; white-space: nowrap; }
+.text_cell_render td { text-align: left; }
+.text_cell_render td:first-child { white-space: normal; }
+table[data-long] td, table[data-long] th { font-size: 7.1pt; padding: 1.2pt 3.5pt; }
+.dataframe thead th { text-align: center !important; }
