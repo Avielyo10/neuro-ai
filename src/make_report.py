@@ -93,6 +93,9 @@ n_train = 17 * 14
 n_narrow = sum(20 * v < n_train for v in n_kept)          # ROIs whose feature count is below 238
 sh = LD["shrinkage"]
 fisher_diff = max(s["max_abs_diff_fisher_vs_plain_mean"] for s in P3["seeds"].values())
+hc = P3["helper_check"]
+check(hc["max_abs_diff_fc"] < 1e-6, "FC map no longer agrees with the port of the course helper")
+hc_txt = "10\u207b\u2076"
 
 # ---------------------------------------------------------------- Task 0
 raw, hrf = t0["raw"], t0["hrf"]
@@ -106,6 +109,10 @@ off = t0["window_offset_scan"]
 best_off = off["best_offset_TR"]
 r_off = dict(zip(off["offset_TR"], off["r"]))
 alt = t0["alt_scan_start"]
+vz = t0["voxel_zscore_first"]
+vz_min = f"{np.floor(vz['min_subj_corr_with_primary'] * 100) / 100:.2f}"
+check(vz["raw_group_peak_lag_TR"] == t0["raw"]["group_peak_lag_TR"] and vz["min_subj_corr_with_primary"] > 0.95,
+      "Task 0: the two A1 averaging conventions no longer agree")
 hemi = t0["hemispheres"]
 n_lags = len(raw["lags_TR"])
 check(raw["group_n_exceed_phase"] == 0 and raw["group_n_exceed_circ"] == 0, "a surrogate reached the group peak")
@@ -206,7 +213,8 @@ bha = [float(np.mean(bh["anat"][h])) for h in (0, 1)]
 bhh = [float(np.mean(bh["hyper"][h])) for h in (0, 1)]
 b_rows = "".join(
     f"<tr><td>{c}</td><td>{B['anat_mean'][j]:.1f}</td><td>{B['hyper_mean'][j]:.1f}</td><td>{n(B['gain_mean'][j], '+.1f')}</td>"
-    f"<td>{B['n_improved'][j]}/52</td><td>{psci(B['p_wilcoxon_rois'][j])}</td></tr>" for j, c in enumerate(clf))
+    f"<td>{B['n_improved'][j]}/52</td><td>{B['n_tied'][j]}</td><td>{psci(B['p_wilcoxon_rois'][j])}</td></tr>" for j, c in enumerate(clf))
+tie_txt = (f" ({B['n_rois_tied_mean']} exactly tied)" if B["n_rois_tied_mean"] else "")
 N_GAIN = 8
 gain_rows = "".join(
     f"<tr><td>{r['roi']}</td><td>{r['n_vox']}</td><td>{r['anat']:.1f}</td><td>{r['hyper']:.1f}</td>"
@@ -356,11 +364,12 @@ Within every LOSO fold the template is built from the 17 training subjects only;
 The anatomical baseline is the identical 7-class split-half procedure with R = I. Optionally the common space was reduced to the top-k principal axes of the training template (k = {min(B['k_list'])}&ndash;{k_max}).</p>
 <p><b>FC / ISFC (Part 3).</b> Python re-implementation of <code>run_isfc_p2m</code> / <code>isfc_p2m_nifti</code>. The seed time course is the mean of the z-scored seed voxels.
 FC: Pearson r between a subject's seed and all of that subject's own voxels. ISFC: r between the seed of subject i and every voxel of the average of the other 17 subjects (leave-one-out; averages computed here, the <code>avg</code> folder was not used).
-Subject maps were Fisher-z averaged over the 18 subjects (the helper uses a plain mean; the two differ by at most {fisher_diff:.2f}) and written as NIfTI (<code>results/map_*.nii.gz</code>).
+As in the helper, the group map is the arithmetic mean of the 18 subject maps of r (averaging after Fisher z-transformation instead changes no voxel by more than {fisher_diff:.2f}); the maps were written as NIfTI (<code>results/map_*.nii.gz</code>).
+The MATLAB helper itself could not be run here (it needs MATLAB with NeuroElf), so its FC branch was ported line by line and run on the raw files for seed {hc['seed']}: the map agrees with the implementation used here to within {hc_txt} at all {hc['n_voxels']:,} mask voxels.
 So that FC and ISFC are compared on identical voxels, both group maps are restricted to the {P3['n_voxels_map_mask']:,} voxels with valid signal in at least {P3['min_valid_subjects']} of the 18 subjects.</p>"""
 
 BLK["task0"] = f"""<h2>2. Task 0 &ndash; Stimulus&ndash;brain alignment in A1</h2>
-<p>A1 was defined as ROIs 48 A1_R + 52 A1_L ({t0['n_voxels_A1']} voxels). The audio envelope was |Hilbert(x)| of the mono signal, low-pass filtered at 8 Hz and averaged within 1.5-s bins.
+<p>A1 was defined as ROIs 48 A1_R + 52 A1_L ({t0['n_voxels_A1']} voxels). As the assignment specifies, a subject's A1 time course is the mean of the signal over these voxels, z-scored; the group time course is the z-scored mean over the 18 subjects. The audio envelope was |Hilbert(x)| of the mono signal, low-pass filtered at 8 Hz and averaged within 1.5-s bins.
 The .wav lasts {t0['audio_s']:.0f} s ({t0['n_tr_bins_audio']} complete TR bins), longer than the 280-TR scan: it starts with ~13 s of music and ~2 s of silence before the story. Following the course example code, the envelope was cropped to the 280 bins starting {t0['scan_start_TR']} TRs ({t0['scan_start_TR'] * TR:.1f} s) into the file.
 Cross-correlation was computed as MATLAB's <code>xcorr(&hellip;,'coeff')</code> for lags &minus;{t0['max_lag_TR']}&hellip;+{t0['max_lag_TR']} TRs (positive lag = BOLD follows the sound).</p>
 <div class="fig">{img('task0_xcorr.png', '96%')}<div class="cap"><b>Figure {FIG['xcorr']}.</b> Cross-correlation between the audio envelope and A1 BOLD. Left: raw envelope. Middle: envelope convolved with the canonical (SPM double-gamma) HRF.
@@ -377,7 +386,8 @@ Single subjects (Table {TAB['subj']}): peak lag {sl.mean():.1f} &plusmn; {sl.std
 (single subjects: {hl.mean():.1f} &plusmn; {hl.std(ddof=1):.1f} TRs), raises the zero-lag correlation from {n(raw['group_r_at_lag0'], '.2f')} to {hrf['group_r_at_lag0']:.2f} and the peak correlation from {raw['group_peak_r']:.2f} to {hrf['group_peak_r']:.2f}: with this crop, the canonical HRF accounts for the delay and for the temporal smoothing of the BOLD response.</li>
 <li><b>Caveat on the absolute lag.</b> The position of the 280-TR scan inside the {t0['audio_s']:.0f}-s recording is not documented in the data files, so the lag is known only up to that offset. The {t0['scan_start_TR']}-TR crop of the example code is also the offset at which a canonical-HRF model fits best
 (sliding the scan window over the HRF-convolved envelope of the whole file: r = {r_off[best_off]:.2f} at {best_off} TRs vs {r_off[best_off - 1]:.2f} at {best_off - 1} and {r_off[best_off + 1]:.2f} at {best_off + 1}). This is not an independent confirmation: it presumes the canonical delay, so crop and lag cannot be separated.
-If the scan started exactly at story onset (15 s = {alt['scan_start_TR']} TRs), the raw peak lag would be +{alt['raw_group_peak_lag_TR']} TRs ({alt['raw_group_peak_lag_TR'] * TR:.0f} s). Either way the lag is {lag}&ndash;{lag + 1} TRs, i.e. hemodynamic.</li>
+If the scan started exactly at story onset (15 s = {alt['scan_start_TR']} TRs), the raw peak lag would be +{alt['raw_group_peak_lag_TR']} TRs ({alt['raw_group_peak_lag_TR'] * TR:.0f} s). Either way the lag is {lag}&ndash;{lag + 1} TRs, i.e. hemodynamic.
+The averaging convention does not matter either: z-scoring every voxel before averaging, as the course example notebook does, gives a group peak at +{vz['raw_group_peak_lag_TR']} TRs with r = {vz['raw_group_peak_r']:.2f} (the subject time courses of the two conventions correlate at r &ge; {vz_min}).</li>
 <li><b>Why this matters.</b> A1 tracks the loudness of the story with a similar, physiologically plausible delay in {nsig} of 18 subjects individually (peak lags {sl.min()}&ndash;{sl.max()} TRs). This indicates that the scans are locked to the stimulus and to each other to within about one TR.
 All later analyses assume this: LOSO decoding and ISFC both rely on TR <i>t</i> meaning the same story moment in every subject. A misaligned or shifted subject would lower decoding and ISFC for purely technical reasons. Because BOLD lags the sound by {lag}&ndash;{lag + 1} TRs, each 20-TR "segment" reflects story content from roughly 5 s earlier, which shifts segment boundaries equally in all subjects and does not affect classification.</li>
 </ul>"""
@@ -427,8 +437,8 @@ BLK["h4"] = f"""<h2>4. Hyperalignment impact analysis (Task B)</h2>"""
 
 BLK["scatter"] = f"""<div class="fig">{img('part2b_scatter.png', '82%')}<div class="cap"><b>Figure {FIG['scatter']}.</b> Anatomical vs. hyperaligned accuracy in the identical split-half 7-class LOSO design (average of both half assignments). One dot per ROI; points above the diagonal improve with hyperalignment.</div></div>"""
 
-BLK["hyp"] = f"""<div class="tbl"><table><tr><th>Classifier</th><th>Anatomical (%)</th><th>Hyperaligned (%)</th><th>Gain (pp)</th><th>ROIs improved</th><th>Wilcoxon p (52 ROIs)</th></tr>{b_rows}</table>
-<div class="cap"><b>Table {TAB['hyp']}.</b> Mean accuracy over the 52 ROIs with anatomical alignment and after hyperalignment (chance 14.29 %). The Wilcoxon signed-rank test compares the two across ROIs (ROIs are not independent, so p-values are descriptive).</div></div>"""
+BLK["hyp"] = f"""<div class="tbl"><table><tr><th>Classifier</th><th>Anatomical (%)</th><th>Hyperaligned (%)</th><th>Gain (pp)</th><th>ROIs improved</th><th>ROIs tied</th><th>Wilcoxon p (52 ROIs)</th></tr>{b_rows}</table>
+<div class="cap"><b>Table {TAB['hyp']}.</b> Mean accuracy over the 52 ROIs with anatomical alignment and after hyperalignment (chance 14.29 %). &ldquo;Improved&rdquo; and &ldquo;tied&rdquo; compare the numbers of correct test samples of a ROI ({B['n_test_per_roi']} per ROI: both halves, 18 folds, 7 samples). The Wilcoxon signed-rank test compares the two across ROIs (ROIs are not independent, so p-values are descriptive).</div></div>"""
 
 BLK["gainroi"] = f"""<div class="fig">{img('part2b_gain_per_roi.png', '82%')}<div class="cap"><b>Figure {FIG['gainroi']}.</b> Per-ROI accuracy (mean of the 7 classifiers) and gain from hyperalignment, mean &plusmn; SEM over folds.</div></div>"""
 
@@ -440,7 +450,7 @@ BLK["half"] = f"""<div class="tbl"><table><tr><th rowspan="2">Classifier</th><th
 <tr><th>Anat.</th><th>Hyper.</th><th>Gain</th><th>Anat.</th><th>Hyper.</th><th>Gain</th></tr>{bh_rows}</table>
 <div class="cap"><b>Table {TAB['half']}.</b> The two split directions separately (mean accuracy over 52 ROIs, %).</div></div>"""
 
-BLK["help"] = f"""<p><b>Did hyperalignment help?</b> Modestly, and not uniformly. Averaged over all ROIs and classifiers accuracy rose from {B['overall_anat']:.1f} % to {B['overall_hyper']:.1f} % ({n(B['subj_gain_mean'], '+.1f')} pp per held-out subject, paired t-test over the 18 subjects p = {B['subj_gain_p']:.3f}); {B['n_rois_improved_mean']} of 52 ROIs improved.
+BLK["help"] = f"""<p><b>Did hyperalignment help?</b> Modestly, and not uniformly. Averaged over all ROIs and classifiers accuracy rose from {B['overall_anat']:.1f} % to {B['overall_hyper']:.1f} % ({n(B['subj_gain_mean'], '+.1f')} pp per held-out subject, paired t-test over the 18 subjects p = {B['subj_gain_p']:.3f}); {B['n_rois_improved_mean']} of 52 ROIs improved{tie_txt}.
 Two qualifications are important. First, the average gain comes almost entirely from one split direction (Table {TAB['half']}): when the first half is decoded, accuracy rises from {bha[0]:.1f} % to {bhh[0]:.1f} %, but when the second half is decoded the anatomical baseline is already higher ({bha[1]:.1f} %) and hyperalignment leaves it essentially unchanged ({bhh[1]:.1f} %).
 Second, the effect differs strongly between regions. With a paired t-test over held-out subjects per ROI (FDR q &lt; .05), {B['n_sig_gain_fdr']} ROIs gain significantly and {B['n_sig_loss_fdr']} lose significantly.
 The gains are concentrated in the <b>superior and middle temporal cortex around the auditory core</b>: the {N_GAIN} largest (Table {TAB['gain']}; {n(min(r['gain'] for r in top_gain), '+.1f')} to {n(max(r['gain'] for r in top_gain), '+.1f')} pp) are posterior STG/STS, STG, mid-MTG, auditory-belt and TPJ ROIs,
@@ -496,7 +506,8 @@ BLK["m3"] = f"""{mapfig('map3', tops[2], f'Seed {tops[2]} (auditory belt); layou
 
 BLK["b"] = f"""<h3>b. Why ISFC filters out non-neuronal artifacts and spontaneous fluctuations</h3>
 <p>A voxel's signal can be written as stimulus-locked response + idiosyncratic neural activity + non-neuronal noise. Within one brain, all three components are shared between seed and target, so all three contribute to FC: respiration and cardiac pulsation, head motion and scanner drift affect many voxels of the same scan simultaneously, local smoothing and vascular coupling contribute to the halo around the seed, and spontaneous (resting-state-like) fluctuations are coherent within intrinsic networks.
-ISFC correlates the seed of one subject with voxels in <i>other</i> subjects, who were scanned at different times. Their breathing, heartbeat, motion, drift and spontaneous thoughts are statistically independent of the seed subject's, so their expected contribution to the cross-subject covariance is zero. The only component that is time-locked across brains is the response to the common stimulus.
+ISFC correlates the seed of one subject with voxels in <i>other</i> subjects, who were scanned at different times. Whatever part of their breathing, heartbeat, motion, drift and spontaneous thoughts is unrelated to the stimulus is independent of the seed subject's, so its expected contribution to the cross-subject covariance is zero. What survives is everything that is time-locked to the common stimulus.
+That is mostly, but not only, the neural response: physiology and motion that the story itself drives in a similar way in different listeners (for example changes of breathing or heart rate at an arousing passage) are synchronised across subjects and are not removed. ISFC therefore shows stimulus-locked signal; reading it as shared neural processing rests on the additional assumption that such stimulus-locked physiology is small.
 Averaging the other 17 subjects before correlating additionally averages out their independent noise, which raises the signal-to-noise ratio of the stimulus-locked component. ISFC is therefore conservative: genuine but subject-specific neural coupling is removed along with the artifacts.</p>"""
 
 BLK["m4"] = f"""{mapfig('map4', extra, f'Supplementary seed {extra} (precuneus, default-mode network); layout as in Figure {FIG["map1"]}.')}"""

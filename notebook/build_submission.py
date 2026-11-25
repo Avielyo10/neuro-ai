@@ -85,7 +85,9 @@ PROSE_EDITS = {
     "methods": [("own implementation in <code>decoding.py</code>, double precision",
                  "own implementation, class <code>ShrinkageLDA</code> in Section 1.1, double precision"),
                 ("written as NIfTI (<code>results/map_*.nii.gz</code>)",
-                 "written as NIfTI (<code>map_*.nii.gz</code> in the work directory)")],
+                 "written as NIfTI (<code>map_*.nii.gz</code> in the work directory)"),
+                ("so its FC branch was ported line by line and run",
+                 "so its FC branch was ported line by line (<code>helper_fc_map</code>, Section 5.1) and run")],
     "lda": [("(<code>src/supp_lda_sensitivity.py</code>; NB = Naive Bayes)", "(Section 3.5; NB = Naive Bayes)")],
     "tvs": [("(<code>src/supp_temporal_vs_spatial.py</code>)", "(Section 3.6)")],
 }

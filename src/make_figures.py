@@ -89,6 +89,12 @@ def part2b():
     A, H = z["anat"].mean(1) * 100, z["hyper"].mean(1) * 100       # (52, 18, 7): mean of the two halves
     R = np.nanmean(z["reduced"], axis=2) * 100                       # (52, K, 18, 7)
     a, h = A.mean(1), H.mean(1)                                      # (52, 7)
+    # Correct test samples per ROI and classifier, summed over both halves and the 18 folds (7 test
+    # samples per fold).  "Improved" is decided on these integers: comparing the float means would
+    # count exact ties as gains or losses by rounding error.
+    n_test = 7
+    ca, ch = (np.rint(z[key] * n_test).astype(int).sum(axis=(1, 2)) for key in ("anat", "hyper"))
+    assert max(np.abs(z[key] * n_test - np.rint(z[key] * n_test)).max() for key in ("anat", "hyper")) < 1e-9
     gain = H - A
     g, gs = gain.mean(1), sem(gain, 1)
 
@@ -185,10 +191,12 @@ def part2b():
            "sig_loss_rois": [labels[k] for k in order if pr[k] <= thr and gm[k].mean() < 0],
            "subj_gain_mean": float(subj_gain.mean()), "subj_gain_p": float(ttest_1samp(subj_gain, 0).pvalue),
            "anat_mean": a.mean(0).tolist(), "hyper_mean": h.mean(0).tolist(),
-           "gain_mean": (h - a).mean(0).tolist(), "n_improved": (h > a).sum(0).tolist(),
+           "gain_mean": (h - a).mean(0).tolist(), "n_improved": (ch > ca).sum(0).tolist(),
+           "n_tied": (ch == ca).sum(0).tolist(), "n_test_per_roi": int(n_test * z["anat"].shape[1] * z["anat"].shape[2]),
            "p_wilcoxon_rois": [wil(h[:, j] - a[:, j]) for j in range(len(clf))],
            "overall_anat": float(a.mean()), "overall_hyper": float(h.mean()),
-           "n_rois_improved_mean": int((gm.mean(1) > 0).sum()),
+           "n_rois_improved_mean": int((ch.sum(1) > ca.sum(1)).sum()),
+           "n_rois_tied_mean": int((ch.sum(1) == ca.sum(1)).sum()),
            "p_wilcoxon_overall": wil(gm.mean(1)),
            "corr_gain_logV": float(np.corrcoef(np.log(nvox), gm.mean(1))[0, 1]),
            "corr_gain_anat": float(np.corrcoef(a.mean(1), gm.mean(1))[0, 1]),

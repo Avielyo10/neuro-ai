@@ -167,13 +167,23 @@
  ],
  "n_improved": [
   22,
-  20,
+  19,
   21,
   38,
-  37,
+  35,
   38,
   41
  ],
+ "n_tied": [
+  1,
+  4,
+  1,
+  0,
+  2,
+  1,
+  0
+ ],
+ "n_test_per_roi": 252,
  "p_wilcoxon_rois": [
   0.7857362509411725,
   0.14501709331243728,
@@ -186,6 +196,7 @@
  "overall_anat": 45.04622361765219,
  "overall_hyper": 47.01835862550148,
  "n_rois_improved_mean": 32,
+ "n_rois_tied_mean": 1,
  "p_wilcoxon_overall": 0.0291747002897664,
  "corr_gain_logV": 0.03367049543064819,
  "corr_gain_anat": 0.1940162208963721,

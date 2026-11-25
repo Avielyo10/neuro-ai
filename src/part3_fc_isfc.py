@@ -6,8 +6,10 @@ ISFC (between)    : r(seed of subject i, every voxel of the AVERAGE of the other
                     averaged over the 18 subjects (leave-one-out ISFC, Simony et al., 2016).
 This is a Python re-implementation of the course helpers run_isfc_p2m.m / isfc_p2m_nifti.m
 (same signal threshold of 6000 and the same 61 x 73 x 61 output grid); the leave-one-out averages
-are computed here instead of being read from the `avg` folder.  Subject-level r maps are averaged
-after Fisher z-transformation and transformed back to r.
+are computed here instead of being read from the `avg` folder.  As in the helper, the group map is
+the plain (arithmetic) mean of the subject-level r maps; the mean after Fisher z-transformation is
+computed for comparison only.  helper_fc_map() is a line-by-line port of the helper's FC branch
+(within = 1) working on the raw .mat files; it is used to validate the vectorised implementation.
 
 Common mask: a subject's FC is defined wherever that subject has valid signal, but leave-one-out ISFC
 needs enough other subjects.  So that FC and ISFC are drawn and summarised on the SAME voxels, both
@@ -95,6 +97,41 @@ def seed_maps(Z, valid, seed_cols):
     return fc, isfc
 
 
+def plain_mean(r):
+    """Arithmetic mean of r over subjects, as nanmean(csub_2, 2) in isfc_p2m_nifti.m."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)      # all-NaN columns -> NaN, masked later
+        return np.nanmean(r.astype(np.float64), axis=0)
+
+
+def helper_fc_map(seed_flat):
+    """Line-by-line port of the FC branch (within = 1) of isfc_p2m_nifti.m, from the raw files.
+
+    seed_flat: flat indices of the seed voxels on the 61 x 73 x 61 grid (the helper's `roimask`).
+    Returns the group map on the full grid (NaN where no subject has valid signal).
+    """
+    files = subject_files()
+    csub = None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for isub, f in enumerate(files):
+            bold = load_subject(f).astype(np.float64)               # bold_one_temp: (280, Nvox)
+            mask_single = bold.mean(0) > SIGNAL_THRESHOLD           # mean(bold_one_temp) > Bth
+            if csub is None:
+                csub = np.full((bold.shape[1], len(files)), np.nan)  # csub_2
+            bold[:, ~mask_single] = np.nan
+            roi = bold[:, seed_flat]                                # seed region, z-scored per voxel
+            roi = (roi - roi.mean(0)) / roi.std(0, ddof=1)
+            b = np.nanmean(roi, axis=1)                             # bold_one
+            ns = len(b)
+            good = np.flatnonzero(mask_single)                      # gg_avg
+            b_avg = bold[:, good]
+            b = (b - b.mean()) / (np.sqrt(ns - 1) * b.std(ddof=1))
+            b_avg = (b_avg - b_avg.mean(0)) / (np.sqrt(ns - 1) * b_avg.std(0, ddof=1))
+            csub[good, isub] = b_avg.T @ b                          # cc
+        return np.nanmean(csub, axis=1)                             # avg_map_dmn
+
+
 def fisher_mean(r):
     """Mean over subjects after Fisher z-transformation (NaN where no subject has a value)."""
     with warnings.catch_warnings():
@@ -152,12 +189,18 @@ def main():
         flat = voi_to_flat_index(vois[k][1])
         seed_cols = np.searchsorted(union, flat[np.isin(flat, union)])
         fc_s, isfc_s = seed_maps(Z, valid, seed_cols)
-        fc, isfc = fisher_mean(fc_s), fisher_mean(isfc_s)
+        fc, isfc = plain_mean(fc_s), plain_mean(isfc_s)   # helper convention: arithmetic mean of r
         fc[~keep] = np.nan; isfc[~keep] = np.nan    # same voxels in both maps
         assert np.array_equal(np.isfinite(fc), keep) and np.array_equal(np.isfinite(isfc), keep)
-        with np.errstate(invalid="ignore"):         # plain mean of r, as in the course helper
-            d_plain = max(float(np.nanmax(np.abs(np.nanmean(m[:, keep], 0) - g[keep])))
-                          for m, g in ((fc_s, fc), (isfc_s, isfc)))
+        # for comparison only: mean over subjects after Fisher z-transformation
+        d_plain = max(float(np.max(np.abs(fisher_mean(m)[keep] - g[keep])))
+                      for m, g in ((fc_s, fc), (isfc_s, isfc)))
+        if k == top[0]:                             # validation against the port of the course helper
+            ref_map = helper_fc_map(flat)[union]
+            assert np.isfinite(ref_map[keep]).all()
+            summary["helper_check"] = {"seed": labels[k], "n_voxels": int(keep.sum()),
+                                       "max_abs_diff_fc": float(np.max(np.abs(ref_map[keep] - fc[keep])))}
+            print("FC map vs. port of isfc_p2m_nifti.m:", summary["helper_check"])
         tag = labels[k].replace(" ", "_")
         for name, m in (("FC", fc), ("ISFC", isfc)):
             imgs[(k, name)] = to_img(m, union, ref)

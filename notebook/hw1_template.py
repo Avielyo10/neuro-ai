@@ -615,11 +615,12 @@ def peak(lags, r):
 # %% [markdown]
 # ### 2.2 Analysis
 #
-# The A1 time course of a subject is the mean of the z-scored voxels of ROIs 48 A1_R and
-# 52 A1_L, z-scored again; the group time course is the z-scored mean over subjects. The cell
-# runs the cross-correlation for the raw and for the HRF-convolved envelope, both null
-# distributions, each hemisphere separately, and two checks of the position of the scan
-# inside the recording. Most of the run time is the Hilbert transform of the recording.
+# As the assignment asks, the A1 time course of a subject is the mean of the signal over the
+# voxels of ROIs 48 A1_R and 52 A1_L, z-scored; the group time course is the z-scored mean
+# over subjects. The cell runs the cross-correlation for the raw and for the HRF-convolved
+# envelope, both null distributions, each hemisphere separately, two checks of the position
+# of the scan inside the recording, and one check of the averaging convention (the course
+# example notebook z-scores every voxel before averaging). Most of the run time is the Hilbert transform of the recording.
 
 # %%
 _t = time.time()
@@ -628,7 +629,7 @@ rng = np.random.default_rng(0)
 # --- A1 BOLD: per subject and group average
 ia = [k for k, lab in enumerate(LABELS) if lab.split()[1] in ("A1_L", "A1_R")]
 a1 = np.concatenate([ROI_X[k] for k in ia], axis=2)                 # (18, 280, V_A1)
-subj_bold = zscore(zscore(a1, axis=1).mean(axis=2), axis=1)         # (18, 280)
+subj_bold = zscore(a1.mean(axis=2), axis=1)       # (18, 280): mean over voxels, then z-score
 group_bold = zscore(subj_bold.mean(axis=0))
 
 # --- audio envelope, cropped to the scan window; raw and convolved with the HRF
@@ -644,7 +645,7 @@ t0 = {"n_voxels_A1": int(a1.shape[2]), "scan_start_TR": onset, "audio_s": audio_
 # --- each hemisphere separately (raw envelope)
 t0["hemispheres"] = {}
 for k in ia:
-    hemi_bold = zscore(zscore(zscore(ROI_X[k], axis=1).mean(axis=2), axis=1).mean(axis=0))
+    hemi_bold = zscore(zscore(ROI_X[k].mean(axis=2), axis=1).mean(axis=0))
     lags_h, r_h = xcorr(env, hemi_bold)
     t0["hemispheres"][LABELS[k]] = {"peak_lag_TR": peak(lags_h, r_h)[0],
                                     "peak_r": peak(lags_h, r_h)[1],
@@ -701,6 +702,19 @@ t0["alt_scan_start"] = {"scan_start_TR": alt, "raw_group_peak_lag_TR": peak(lags
                         "raw_group_peak_r": peak(lags_a, r_a)[1]}
 print(f"crop at {alt} TRs instead: raw peak lag {peak(lags_a, r_a)[0]} TR, "
       f"r = {peak(lags_a, r_a)[1]:.3f}")
+
+# --- check: z-score every voxel before averaging, as in the course example notebook (equal
+#     weight per voxel instead of weight proportional to the voxel's signal amplitude)
+subj_vz = zscore(zscore(a1, axis=1).mean(axis=2), axis=1)
+lags_v, r_v = xcorr(env, zscore(subj_vz.mean(axis=0)))
+t0["voxel_zscore_first"] = {
+    "raw_group_peak_lag_TR": peak(lags_v, r_v)[0], "raw_group_peak_r": peak(lags_v, r_v)[1],
+    "min_subj_corr_with_primary": float(min(np.corrcoef(x, y)[0, 1]
+                                            for x, y in zip(subj_bold, subj_vz))),
+    "subj_peak_lag_TR": [peak(*xcorr(env, s))[0] for s in subj_vz]}
+print(f"voxel-wise z-score before averaging instead: raw peak lag {peak(lags_v, r_v)[0]} TR, "
+      f"r = {peak(lags_v, r_v)[1]:.3f}; correlation of the subject time courses with the "
+      f"primary ones >= {t0['voxel_zscore_first']['min_subj_corr_with_primary']:.3f}")
 
 save_json(t0, "task0_alignment.json")
 TIMINGS["2 Task 0"] = time.time() - _t
@@ -1493,6 +1507,12 @@ def summarise_task_b(anat, hyper, reduced, resid_all):
     A_, H_ = anat.mean(1) * 100, hyper.mean(1) * 100     # (52, 18, 7): mean of both halves
     R_ = mean_of_halves(reduced)                         # (52, K, 18, 7)
     a, h = A_.mean(1), H_.mean(1)                        # (52, 7)
+    # Correct test samples per ROI and classifier, summed over both halves and the 18 folds
+    # (7 test samples per fold).  "Improved" is decided on these integers: comparing the
+    # float means would count exact ties as gains or losses by rounding error.
+    n_test = 7
+    ca, ch = (np.rint(x * n_test).astype(int).sum(axis=(1, 2)) for x in (anat, hyper))
+    assert max(np.abs(x * n_test - np.rint(x * n_test)).max() for x in (anat, hyper)) < 1e-9
     gm = (H_ - A_).mean(2)                               # (52, 18): gain, mean of classifiers
     gs = sem(gm, 1)
     order = np.argsort(-gm.mean(1))
@@ -1525,10 +1545,13 @@ def summarise_task_b(anat, hyper, reduced, resid_all):
         "subj_gain_mean": float(subj_gain.mean()),
         "subj_gain_p": float(ttest_1samp(subj_gain, 0).pvalue),
         "anat_mean": a.mean(0).tolist(), "hyper_mean": h.mean(0).tolist(),
-        "gain_mean": (h - a).mean(0).tolist(), "n_improved": (h > a).sum(0).tolist(),
+        "gain_mean": (h - a).mean(0).tolist(), "n_improved": (ch > ca).sum(0).tolist(),
+        "n_tied": (ch == ca).sum(0).tolist(),
+        "n_test_per_roi": int(n_test * anat.shape[1] * anat.shape[2]),
         "p_wilcoxon_rois": [wilcoxon_p(h[:, j] - a[:, j]) for j in range(len(clf))],
         "overall_anat": float(a.mean()), "overall_hyper": float(h.mean()),
-        "n_rois_improved_mean": int((gm.mean(1) > 0).sum()),
+        "n_rois_improved_mean": int((ch.sum(1) > ca.sum(1)).sum()),
+        "n_rois_tied_mean": int((ch.sum(1) == ca.sum(1)).sum()),
         "p_wilcoxon_overall": wilcoxon_p(gm.mean(1)),
         "corr_gain_logV": float(np.corrcoef(np.log(nvox), gm.mean(1))[0, 1]),
         "corr_gain_anat": float(np.corrcoef(a.mean(1), gm.mean(1))[0, 1]),
@@ -1561,8 +1584,8 @@ save_json(B, "part2b_summary.json")
 print(f"all ROIs and classifiers: {B['overall_anat']:.1f} % -> {B['overall_hyper']:.1f} %")
 print(f"gain per held-out subject: {B['subj_gain_mean']:+.1f} pp "
       f"(paired t-test over the 18 subjects: p = {B['subj_gain_p']:.3f})")
-print(f"ROIs with a higher mean accuracy after hyperalignment: {B['n_rois_improved_mean']} "
-      "of 52")
+print(f"ROIs with more correct predictions after hyperalignment (all classifiers together): "
+      f"{B['n_rois_improved_mean']} of 52; exact ties: {B['n_rois_tied_mean']}")
 print(f"significant (FDR q < .05) gains: {B['n_sig_gain_fdr']} ROIs, "
       f"losses: {B['n_sig_loss_fdr']} ROIs")
 print(f"   losses in: {', '.join(B['sig_loss_rois'])}")
@@ -1631,6 +1654,7 @@ show_table(pd.DataFrame({
     "Hyperaligned (%)": [f"{v:.1f}" for v in B["hyper_mean"]],
     "Gain (pp)": [signed(v, "+.1f") for v in B["gain_mean"]],
     "ROIs improved": [f"{v}/52" for v in B["n_improved"]],
+    "ROIs tied": B["n_tied"],
     "Wilcoxon p (52 ROIs)": [psci(p) for p in B["p_wilcoxon_rois"]],
 }))
 
@@ -1780,7 +1804,12 @@ show_figure(fig, "part2b_dimensionality.png", dpi=170, width=1000)
 #   the subject's own voxels. ISFC: correlation of the subject's seed with the z-scored mean
 #   of the other subjects at every voxel (leave-one-out), where at least 9 other subjects
 #   have valid signal.
-# - `fisher_mean` averages the subject maps after Fisher z-transformation.
+# - `plain_mean` averages the subject maps with an arithmetic mean of r, as the course helper
+#   does (`nanmean(csub_2, 2)` in `isfc_p2m_nifti.m`). `fisher_mean` (mean after Fisher
+#   z-transformation) is used for comparison only.
+# - `helper_fc_map` is a line-by-line port of the FC branch (`within = 1`) of
+#   `isfc_p2m_nifti.m`. It works on the raw subject files, independently of
+#   `load_whole_brain` and `seed_maps`, and is used to validate them for one seed.
 # - `probe_cols` returns the 3 × 3 × 3 voxel cube centred on a template coordinate; these
 #   cubes are used only to put numbers on the verbal description of the maps.
 
@@ -1850,6 +1879,42 @@ def seed_maps(Z, valid, seed_cols):
     return fc, isfc
 
 
+def plain_mean(r):
+    """Arithmetic mean of r over subjects, as nanmean(csub_2, 2) in isfc_p2m_nifti.m."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)       # all-NaN columns -> NaN
+        return np.nanmean(r.astype(np.float64), axis=0)
+
+
+def helper_fc_map(seed_flat):
+    """Line-by-line port of the FC branch (within = 1) of isfc_p2m_nifti.m, raw files.
+
+    seed_flat: flat indices of the seed voxels on the 61 x 73 x 61 grid (`roimask`).
+    Returns the group map on the full grid (NaN where no subject has valid signal).
+    The variable names of the MATLAB helper are given in the comments.
+    """
+    csub = None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for isub, f in enumerate(SUBJECT_FILES):
+            bold = load_subject(f).astype(np.float64)        # bold_one_temp (280, Nvox)
+            mask_single = bold.mean(0) > SIGNAL_THRESHOLD    # mean(bold_one_temp) > Bth
+            if csub is None:
+                csub = np.full((bold.shape[1], N_SUB), np.nan)        # csub_2
+            bold[:, ~mask_single] = np.nan
+            roi = bold[:, seed_flat]                         # ROI: seed voxels, z-scored
+            roi = (roi - roi.mean(0)) / roi.std(0, ddof=1)
+            b = np.nanmean(roi, axis=1)                      # bold_one / B
+            ns = len(b)
+            good = np.flatnonzero(mask_single)               # gg_avg
+            b_avg = bold[:, good]                            # B_avg
+            b = (b - b.mean()) / (np.sqrt(ns - 1) * b.std(ddof=1))
+            b_avg = (b_avg - b_avg.mean(0)) / (np.sqrt(ns - 1) * b_avg.std(0, ddof=1))
+            csub[good, isub] = b_avg.T @ b                   # cc
+            del bold, b_avg
+        return np.nanmean(csub, axis=1)                      # avg_map_dmn
+
+
 def fisher_mean(r):
     """Mean over subjects after Fisher z-transformation (NaN where no subject has a value)."""
     with warnings.catch_warnings():
@@ -1881,7 +1946,8 @@ def to_img(values, union):
 # FC and ISFC maps of the three top seeds and of the supplementary precuneus seed, restricts
 # both group maps to the common mask (voxels that are valid in at least 10 of the 18
 # subjects), writes them as NIfTI files to the work directory, and collects the summary
-# numbers of each seed (about half a minute).
+# numbers of each seed (about half a minute). For the first seed the FC map is also computed
+# with the port of the course helper from the raw files (about one more minute) and compared.
 
 # %%
 _t = time.time()
@@ -1921,15 +1987,20 @@ for k in seeds_all:
     flat = voi_to_flat_index(VOIS[k][1])
     seed_cols = np.searchsorted(union, flat[np.isin(flat, union)])
     fc_s, isfc_s = seed_maps(Z, valid, seed_cols)
-    fc, isfc = fisher_mean(fc_s), fisher_mean(isfc_s)
+    fc, isfc = plain_mean(fc_s), plain_mean(isfc_s)     # helper convention: mean of r
     fc[~keep] = np.nan                           # the same voxels in both maps
     isfc[~keep] = np.nan
     assert np.array_equal(np.isfinite(fc), keep) and np.array_equal(np.isfinite(isfc), keep)
-    with np.errstate(invalid="ignore"), warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        # largest difference to a plain mean of r (the course helper uses a plain mean)
-        d_plain = max(float(np.nanmax(np.abs(np.nanmean(m_[:, keep], 0) - g_[keep])))
-                      for m_, g_ in ((fc_s, fc), (isfc_s, isfc)))
+    # for comparison only: largest difference to the mean after Fisher z-transformation
+    d_plain = max(float(np.max(np.abs(fisher_mean(m_)[keep] - g_[keep])))
+                  for m_, g_ in ((fc_s, fc), (isfc_s, isfc)))
+    if k == top[0]:           # validation against the port of the course helper (raw files)
+        ref_map = helper_fc_map(flat)[union]
+        assert np.isfinite(ref_map[keep]).all()
+        P3["helper_check"] = {
+            "seed": LABELS[k], "n_voxels": int(keep.sum()),
+            "max_abs_diff_fc": float(np.max(np.abs(ref_map[keep] - fc[keep])))}
+        del ref_map
     tag = LABELS[k].replace(" ", "_")
     for name, m_ in (("FC", fc), ("ISFC", isfc)):
         imgs[(k, name)] = to_img(m_, union)
@@ -1969,7 +2040,11 @@ for k in seeds_all:
           f"{_s['n_fc_lt_neg_thr']:7,} / {_s['n_isfc_lt_neg_thr']:6,}")
 save_json(P3, "part3_summary.json")
 _dmax = max(s["max_abs_diff_fisher_vs_plain_mean"] for s in P3["seeds"].values())
-print(f"largest difference between the Fisher-z mean and a plain mean of r: {_dmax:.2f}")
+print(f"largest difference between the plain mean of r (used) and the Fisher-z mean: "
+      f"{_dmax:.3f}")
+_hc = P3["helper_check"]
+print(f"FC map of seed {_hc['seed']} vs. the port of isfc_p2m_nifti.m: largest difference "
+      f"{_hc['max_abs_diff_fc']:.1e} over {_hc['n_voxels']:,} voxels")
 
 print("\nFC / ISFC at the probe locations (mean over the 3 x 3 x 3 voxel cube), per seed:")
 show_table(pd.DataFrame(

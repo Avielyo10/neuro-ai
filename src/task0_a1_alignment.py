@@ -1,6 +1,8 @@
 """Task 0 - Stimulus-brain alignment in primary auditory cortex (A1).
 
-1. A1 BOLD time course per subject (mean of z-scored voxels in A1_L + A1_R) and group average.
+1. A1 BOLD time course per subject (mean of the raw signal over the voxels of A1_L + A1_R, then
+   z-scored, as in the assignment text) and group average.  The convention of the course example
+   notebook (z-score every voxel before averaging) is run as a check.
 2. Audio amplitude envelope: |Hilbert|, 8-Hz low-pass, averaged within 1.5-s TR bins.
 3. Normalised cross-correlation (xcorr 'coeff') envelope vs. BOLD at lags -10..+10 TRs.
 4. Significance: phase-randomised surrogate envelopes (N_SURR random draws) and ALL admissible
@@ -94,7 +96,7 @@ def main():
     roi = load_roi_data()
     ia = [k for k, l in enumerate(roi["labels"]) if l.split()[1] in ("A1_L", "A1_R")]
     a1 = np.concatenate([roi["X"][k] for k in ia], axis=2)          # (18, 280, V_A1)
-    subj = zscore(zscore(a1, axis=1).mean(axis=2), axis=1)          # (18, 280)
+    subj = zscore(a1.mean(axis=2), axis=1)                          # (18, 280): mean over voxels, then z
     group = zscore(subj.mean(axis=0))
     print(f"A1 ROIs: {[roi['labels'][k] for k in ia]}, {a1.shape[2]} voxels")
 
@@ -110,7 +112,7 @@ def main():
     # each hemisphere separately (raw envelope): the group peak lies between lags 3 and 4
     res["hemispheres"] = {}
     for k in ia:
-        gh = zscore(zscore(zscore(roi["X"][k], axis=1).mean(axis=2), axis=1).mean(axis=0))
+        gh = zscore(zscore(roi["X"][k].mean(axis=2), axis=1).mean(axis=0))
         lags_h, r_h = xcorr(env, gh)
         res["hemispheres"][roi["labels"][k]] = {"peak_lag_TR": peak(lags_h, r_h)[0], "peak_r": peak(lags_h, r_h)[1],
                                                 "r_by_lag": r_h.tolist()}
@@ -159,6 +161,15 @@ def main():
     lags_a, r_a = xcorr(zscore(env_full[alt: alt + N_TR]), group)
     res["alt_scan_start"] = {"scan_start_TR": alt, "raw_group_peak_lag_TR": peak(lags_a, r_a)[0],
                              "raw_group_peak_r": peak(lags_a, r_a)[1]}
+    # Check: the course example notebook z-scores every voxel before averaging (equal weight per voxel
+    # instead of weight proportional to the voxel's signal amplitude).  Raw envelope, group level.
+    subj_vz = zscore(zscore(a1, axis=1).mean(axis=2), axis=1)
+    lags_v, r_v = xcorr(env, zscore(subj_vz.mean(axis=0)))
+    res["voxel_zscore_first"] = {
+        "raw_group_peak_lag_TR": peak(lags_v, r_v)[0], "raw_group_peak_r": peak(lags_v, r_v)[1],
+        "min_subj_corr_with_primary": float(min(np.corrcoef(x, y)[0, 1] for x, y in zip(subj, subj_vz))),
+        "subj_peak_lag_TR": [peak(*xcorr(env, s))[0] for s in subj_vz]}
+    print("check, voxel-wise z-score before averaging:", {k: v for k, v in res["voxel_zscore_first"].items()})
     json.dump(res, open(RESULTS / "task0_alignment.json", "w"), indent=1)
 
     # ---------------- figures ----------------
